@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<odoo>
+    <data>
+        <record id="view_res_config_settings_enable_reminder" model="ir.ui.view">
+            <field name="name">res.config.settings.enable.reminder</field>
+            <field name="model">res.config.settings</field>
+            <field name="inherit_id" ref="mrp.res_config_settings_view_form"/>
+            <field name="arch" type="xml">
+
+                <!-- Add a new block under MRP settings -->
+                <xpath expr="//app[@name='mrp']" position="inside">
+
+                    <block title="Reminder Settings">
+                        <setting id="enable_reminder_setting" string="Reminder Email">
+                            <field name="enable_reminder"/>
+                        </setting>
+
+                        <setting invisible="not enable_reminder">
+                            <field name="reminder_days" class="oe_inline"/>
+                        </setting>
+                    </block>
+
+                </xpath>
+
+                <!-- Add CRM Discount Setting -->
+                <xpath expr="//app[@name='crm']" position="inside">
+                     <block title="Pricing">
+                        <setting id="crm_discount_setting" help="Grant discounts on material lines">
+                            <field name="group_crm_discount"/>
+                        </setting>
+                    </block>
+                </xpath>
+
+            </field>
+        </record>
+
+    </data>
+</odoo>

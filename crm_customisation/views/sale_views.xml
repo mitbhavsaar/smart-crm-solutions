@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<odoo>
+  <data>
+      <record id="view_order_form_inherit_ecpl" model="ir.ui.view">
+      <field name="name">sale.order.form.ecpl</field>
+      <field name="model">sale.order</field>
+      <field name="inherit_id" ref="sale.view_order_form"/>
+      <field name="arch" type="xml">
+          <xpath expr="//field[@name='payment_term_id']" position="after">
+            <field name="ask_for_delivery_date"/>
+            <field name="delivery_date" invisible = "ask_for_delivery_date  == False"/>
+          </xpath>
+          <!-- Add Cost Calculator button to button box -->
+          <xpath expr="//div[@name='button_box']" position="inside">
+              <button class="oe_stat_button"
+                type="object"
+                name="action_open_spreadsheet_common"
+                icon="fa-calculator"
+                string="Cost Calculator"/>
+          </xpath>
+      </field>
+    </record>
+  </data>
+
+</odoo>

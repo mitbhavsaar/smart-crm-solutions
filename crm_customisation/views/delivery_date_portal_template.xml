@@ -1,0 +1,71 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+  <!-- 1. Delivery Date Form Template -->
+  <template id="delivery_date_portal_template" name="Set Delivery Date">
+    <t t-call="website.layout">
+      <div class="container py-5">
+        <div class="row justify-content-center">
+          <div class="col-md-6">
+            <div class="card shadow">
+              <div class="card-header bg-primary text-white">
+                <h4 class="mb-0">Set Expected Delivery Date</h4>
+              </div>
+              <div class="card-body">
+                <form action="/production/delivery_date" method="post">
+                  <input type="hidden" name="csrf_token" t-att-value="request.csrf_token()"/>
+                  <input type="hidden" name="lead_id" t-att-value="lead.id"/>
+
+                  <div class="form-group mb-3">
+                    <label for="delivery_date">Select Delivery Date</label>
+                    <input type="date" name="delivery_date" required="required" class="form-control" widget="date"/>
+                  </div>
+
+                  <div class="d-flex justify-content-end">
+                    <a href="/" class="btn btn-secondary me-2">Cancel</a>
+                    <button type="submit" class="btn btn-primary">Confirm</button>
+                  </div>
+                </form>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </t>
+  </template>
+
+  <!-- 2. Success Message Template -->
+  <template id="delivery_date_success" name="Delivery Date Success">
+    <t t-call="website.layout">
+      <div class="container py-5">
+        <div class="row justify-content-center">
+          <div class="col-md-8">
+            <div class="alert alert-success text-center" role="alert">
+              <h4 class="alert-heading">Success!</h4>
+              <p>The expected delivery date has been saved successfully.</p>
+              <hr/>
+              <a href="/" class="btn btn-primary mt-3">Go to Home</a>
+            </div>
+          </div>
+        </div>
+      </div>
+    </t>
+  </template>
+
+  <!-- 3. Already Set Template -->
+  <template id="delivery_date_already_set" name="Delivery Date Already Set">
+    <t t-call="website.layout">
+      <div class="container py-5">
+        <div class="row justify-content-center">
+          <div class="col-md-8">
+            <div class="alert alert-warning text-center" role="alert">
+              <h4 class="alert-heading">Already Set</h4>
+              <p>The delivery date has already been set as: <strong><t t-esc="mo.delivery_date"/></strong>.</p>
+              <hr/>
+              <a href="/" class="btn btn-secondary mt-3">Go to Home</a>
+            </div>
+          </div>
+        </div>
+      </div>
+    </t>
+  </template>
+</odoo>

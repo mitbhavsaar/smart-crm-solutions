@@ -1,0 +1,60 @@
+<?xml version='1.0' encoding='utf-8'?>
+<odoo>
+        <record id="email_template_crm_delivery_request" model="mail.template">
+            <field name="name">Delivery Date Request</field>
+            <field name="model_id" ref="crm.model_crm_lead"/>
+            <field name="email_from">{{ user.email or 'noreply@example.com' }}</field>
+            <field name="subject">Delivery Date Request - {{ object.name }}</field>
+            <field name="body_html" type="html">
+                <div>
+                <p>Dear <t t-out="object.user_id.name or 'Production Incharge'"/></p>
+
+                <p>I hope this message finds you well.</p>
+                
+                <p>We have received a new sales inquiry where the client has requested an estimated delivery date for the proposed products. Kindly find the lead details below for your review:
+                </p>
+                
+                <ul>
+                <li><strong>Client:</strong> <t t-out="object.partner_name or 'N/A'"/></li>
+                <li><strong>Lead Name:</strong> <t t-out="object.name"/></li>
+                <t t-if="object.material_line_ids">
+                    <li><strong>Expected Products:</strong></li>
+                        <table style="width:100%; border-collapse: collapse; color: black; font-family: Arial, sans-serif;">
+                            <thead>
+                                <tr>
+                                    <th style="border-bottom: 1px solid #ddd; text-align: left; padding: 8px;">Product</th>
+                                    <th style="border-bottom: 1px solid #ddd; text-align: left; padding: 8px;">Quantity</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <t t-foreach="object.material_line_ids" t-as="line">
+                                    <tr>
+                                        <td style="padding: 8px;"><t t-out="line.product_template_id.name or 'N/A'" /></td>
+                                        <td style="padding: 8px;"><t t-out="line.quantity or 'N/A'" /></td>
+                                    </tr>
+                                </t>
+                            </tbody>
+                        </table>
+                </t>
+                <t t-else="">
+                    <li><strong>Expected Products:</strong> Not specified</li>
+                </t>
+                <li><strong>Salesperson:</strong> <t t-out="object.user_id.name or 'Unassigned'"/></li>
+                </ul>
+
+                <p>We would appreciate it if you could provide a tentative delivery date at your earliest convenience.</p>
+                
+                <p>Please provide the tentative delivery date by clicking the button below:</p>
+                <a t-att-href="object.get_portal_delivery_url()" target="_blank"
+                    style="background-color:#52374b; color:#ffffff; padding:10px 20px; text-decoration:none; border-radius:4px;">
+                        <i class="fa fa-calendar"></i>
+                        Provide Delivery Date
+                </a>
+
+                <p>Thank you,<br/>
+                <strong>Sales Team</strong></p>
+                </div>
+            </field>
+        </record>
+
+</odoo>

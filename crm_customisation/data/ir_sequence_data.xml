@@ -1,0 +1,11 @@
+<odoo>
+  <!-- Date-range aware sequence for Opportunities -->
+  <record id="seq_crm_opportunity_custom" model="ir.sequence">
+    <field name="name">CRM Opportunity Custom Sequence</field>
+    <field name="code">crm.opportunity.custom.seq</field>
+    <field name="prefix">OPP/%(year)s/%(month)s/</field>
+    <field name="padding">5</field>
+    <field name="implementation">standard</field>
+    <field name="company_id" eval="False"/>
+  </record>
+</odoo>

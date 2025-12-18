@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+
+<record id="view_mrp_production_form_inherit_raisin" model="ir.ui.view">
+    <field name="name">mrp.production.form.raisin</field>
+    <field name="model">mrp.production</field>
+    <field name="inherit_id" ref="mrp.mrp_production_form_view"/>
+    <field name="arch" type="xml">
+        <xpath expr="//field[@name ='user_id']" position="after">
+                <!-- <field name="raisin_product_id"/> -->
+
+                <field name="ask_for_delivery_date"/>
+                <field name="delivery_date" invisible = "ask_for_delivery_date  == False"/>
+        </xpath>
+        
+     
+    </field>
+</record>
+</odoo>
