@@ -12,15 +12,7 @@
                 <field name="attributes_json" widget="json" readonly="1" column_invisible="1"/>
             </xpath>
             
-            <!-- Add BOQ Attachment fields -->
-            <xpath expr="//field[@name='material_line_ids']/list/field[@name='attached_file_id']" position="after">
-                <field name="boq_attachment_name" invisible="1" column_invisible="1"/>
-                <field name="boq_attachment_id" 
-                    widget="binary" 
-                    filename="boq_attachment_name"
-                    string="BOQ Attachment"
-                    optional="show" column_invisible="1"/>
-            </xpath>
+            
         </field>
     </record>
 </odoo>

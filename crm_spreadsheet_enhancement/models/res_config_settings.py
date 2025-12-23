@@ -1,33 +1,50 @@
-from odoo import models, fields ,api
-from odoo.exceptions import ValidationError
+from odoo import models, fields, api
 
 
 class ResConfigSettings(models.TransientModel):
     _inherit = 'res.config.settings'
-    
+
     enable_crm_quotation_templates = fields.Boolean(
-            string="CRM Quotation Templates",
-        )
+        string="CRM Quotation Templates",
+        config_parameter='crm_spreadsheet_enhancement.enable_crm_quotation_templates'
+        
+    )
+
     crm_quotation_template_id = fields.Many2one(
         'crm.quotation.template',
         string="Default CRM Quotation Template",
-    )
+        config_parameter='crm_spreadsheet_enhancement.crm_quotation_template_id'
 
+
+    )
 
     def set_values(self):
         super().set_values()
-        IrConfig = self.env['ir.config_parameter'].sudo()
-        IrConfig.set_param('crm_spreadsheet_enhancement.enable_crm_quotation_templates', self.enable_crm_quotation_templates)
-        IrConfig.set_param('crm_spreadsheet_enhancement.crm_quotation_template_id', str(self.crm_quotation_template_id.id) if self.crm_quotation_template_id else '')
+        config = self.env['ir.config_parameter'].sudo()
+        config.set_param(
+            'crm_spreadsheet_enhancement.enable_crm_quotation_templates',
+            self.enable_crm_quotation_templates
+        )
+        config.set_param(
+            'crm_spreadsheet_enhancement.crm_quotation_template_id',
+            self.crm_quotation_template_id.id or ''
+        )
 
     @api.model
     def get_values(self):
         res = super().get_values()
-        IrConfig = self.env['ir.config_parameter'].sudo()
-        template_id_str = IrConfig.get_param('crm_spreadsheet_enhancement.crm_quotation_template_id', False)
-        template_rec = self.env['crm.quotation.template'].browse(int(template_id_str)) if template_id_str and template_id_str.isdigit() else False
+        config = self.env['ir.config_parameter'].sudo()
+
+        enable = config.get_param(
+            'crm_spreadsheet_enhancement.enable_crm_quotation_templates', 'False'
+        )
+
+        template_id = config.get_param(
+            'crm_spreadsheet_enhancement.crm_quotation_template_id'
+        )
+
         res.update({
-            'enable_crm_quotation_templates': IrConfig.get_param('crm_spreadsheet_enhancement.enable_crm_quotation_templates', False),
-            'crm_quotation_template_id': template_rec,  
+            'enable_crm_quotation_templates': enable == 'True',
+            'crm_quotation_template_id': int(template_id) if template_id else False,
         })
         return res

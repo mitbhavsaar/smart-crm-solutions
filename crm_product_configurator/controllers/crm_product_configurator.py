@@ -185,39 +185,10 @@ class ProductConfiguratorController(Controller):
                             except ValueError:
                                 _logger.warning(f"⚠️ Invalid quantity value '{custom_value}' for attribute '{ptav.attribute_id.name}'")
 
-                # 🔥 CHECK FOR QUANTITY UOM ATTRIBUTE
-                # Find the "Quantity UOM" attribute value and map it to uom.uom
-                quantity_uom_value = None
-                for ptav_id in ptav_ids:
-                    ptav = request.env['product.template.attribute.value'].browse(int(ptav_id))
-                    if ptav.attribute_id.name == "Quantity UOM":
-                        quantity_uom_value = ptav.name
-                        _logger.info(f"✅ Found Quantity UOM attribute value: {quantity_uom_value}")
-                        break
-                
-                # Search for matching UOM in uom.uom
-                uom_to_set = None
-                if quantity_uom_value:
-                    matching_uom = request.env['uom.uom'].sudo().search([
-                        ('name', '=', quantity_uom_value)
-                    ], limit=1)
-                    
-                    if matching_uom:
-                        uom_to_set = matching_uom.id
-                        _logger.info(f"✅ Matched UOM '{quantity_uom_value}' to uom.uom ID: {uom_to_set}")
-                    else:
-                        _logger.warning(f"⚠️ No matching uom.uom found for '{quantity_uom_value}', UOM will be left blank")
-                        uom_to_set = False
-
                 # 🔥 FILE UPLOAD PAYLOAD (from frontend)
                 file_upload_payload = product_data.get('file_upload', {}) or {}
                 payload_file_name = file_upload_payload.get('file_name') or file_upload_payload.get('name')
                 payload_file_data = file_upload_payload.get('file_data') or file_upload_payload.get('data')
-
-                # NEW: CONDITIONAL FILE UPLOAD PAYLOAD (from frontend)
-                conditional_file_payload = product_data.get('conditional_file_upload', {}) or {}
-                conditional_file_name = conditional_file_payload.get('file_name') or conditional_file_payload.get('name')
-                conditional_file_data = conditional_file_payload.get('file_data') or conditional_file_payload.get('data')
 
                 if not product_id:
                     _logger.warning(
@@ -247,22 +218,13 @@ class ProductConfiguratorController(Controller):
                         f"Template ID mismatch: expected {template_id}, got {template.id}"
                     )
 
-                # UoM - Prioritize Quantity UOM attribute if found
-                if uom_to_set is not None:
-                    # Use the UOM from "Quantity UOM" attribute
-                    uom_id = uom_to_set
-                    if uom_id:
-                        _logger.info(f"✅ Using UOM from Quantity UOM attribute: {uom_id}")
-                    else:
-                        _logger.info(f"⚠️ No matching UOM found for Quantity UOM attribute, leaving blank")
-                else:
-                    # Fall back to product's default UOM
-                    uom_id = product_variant.uom_id.id if product_variant.uom_id else False
-                    if not uom_id:
-                        _logger.warning(f"Product {product_id} has no UOM, using default")
-                        uom_rec = request.env.ref('uom.product_uom_unit', raise_if_not_found=False)
-                        if uom_rec:
-                            uom_id = uom_rec.id
+                # UoM
+                uom_id = product_variant.uom_id.id if product_variant.uom_id else False
+                if not uom_id:
+                    _logger.warning(f"Product {product_id} has no UOM, using default")
+                    uom_rec = request.env.ref('uom.product_uom_unit', raise_if_not_found=False)
+                    if uom_rec:
+                        uom_id = uom_rec.id
 
                 category_id = template.categ_id.id if template.categ_id else False
 
@@ -314,11 +276,13 @@ class ProductConfiguratorController(Controller):
                     av.attribute_id.display_type == 'file_upload' for av in attribute_values
                 )
 
-                # Build description with proper gel-coat filtering
+                # =========================
+                # BUILD DESCRIPTION (SKIP file_upload)
+                # =========================
+                # =========================
+                # BUILD DESCRIPTION (Refactored for Pair with Previous)
+                # =========================
                 attribute_lines = []
-                last_skipped_was_gelcoat = False  # Track if we just skipped a gel-coat attribute
-                last_was_product_name = False     # Track if we just processed Product Name
-                last_was_gel_coat_req_no = False  # Track if last visible line was Gel Coat REQ: No
                 
                 # Helper to find custom value for a PTAL
                 def get_custom_val(ptal):
@@ -327,82 +291,19 @@ class ProductConfiguratorController(Controller):
                             return cv.get('custom_value')
                     return None
 
-                # 🔥 Check if "Gel Coat REQ" is set to "No"
-                gel_coat_required = True  # Default to True
-                print(f"\n🔍 DEBUG: Total attribute_lines in template: {len(template.attribute_line_ids)}")
-                print(f"🔍 DEBUG: Total attribute_values in variant: {len(attribute_values)}")
-                for av in attribute_values:
-                    print(f"   - {av.attribute_id.name}: {av.name} (is_gelcoat_flag: {av.attribute_id.is_gelcoat_required_flag})")
-                
-                for ptal in template.attribute_line_ids:
-                    if ptal.attribute_id.name and "gel coat req" in ptal.attribute_id.name.lower():
-                        selected_ptavs = attribute_values.filtered(lambda v: v.attribute_line_id == ptal)
-                        for ptav in selected_ptavs:
-                            if ptav.name and ptav.name.lower() == "no":
-                                gel_coat_required = False
-                                _logger.info("🔍 Gel Coat REQ is set to 'No', will hide Gel-coat attribute")
-                                break
-                        break
-
                 for ptal in template.attribute_line_ids:
                     # Skip file upload
                     if ptal.attribute_id.display_type == "file_upload":
-                        last_skipped_was_gelcoat = False
                         continue
 
                     # Skip is_quantity attributes
                     if ptal.attribute_id.is_quantity:
-                        last_skipped_was_gelcoat = False
                         continue
-
-                    # 🔥 Skip Gel-coat attribute if Gel Coat REQ is "No"
-                    # BUT do NOT skip the "Gel Coat REQ" attribute itself!
-                    attr_name_lower = ptal.attribute_id.name.lower() if ptal.attribute_id.name else ""
-                    is_product_name = "product name" in attr_name_lower
-                    
-                    # 🔥 NEW: Skip paired attribute if previous was Product Name (e.g. skip "Units")
-                    if ptal.attribute_id.pair_with_previous and last_was_product_name:
-                        _logger.info(f"⏭️ Skipping paired attribute '{ptal.attribute_id.name}' because previous was Product Name")
-                        last_was_product_name = False
-                        continue
-
-                    # 🔥 NEW: Skip paired attribute if previous was Gel Coat REQ: No (e.g. skip "Kg / Unit")
-                    if ptal.attribute_id.pair_with_previous and last_was_gel_coat_req_no:
-                        _logger.info(f"⏭️ Skipping paired attribute '{ptal.attribute_id.name}' because previous was Gel Coat REQ: No")
-                        # Keep last_was_gel_coat_req_no = True in case there are more paired attributes
-                        continue
-
-                    is_gel_coat_req_attr = "gel coat req" in attr_name_lower or "gelcoat req" in attr_name_lower
-                    
-                    # Check if this is a gel-coat related attribute (but not the "Gel Coat REQ" itself)
-                    is_gelcoat_attr = (
-                        ptal.attribute_id.is_gelcoat_required_flag or 
-                        ("gel" in attr_name_lower and "coat" in attr_name_lower and "req" not in attr_name_lower)
-                    )
-                    
-                    # 🔥 NEW: Also skip if this attribute has pair_with_previous and the last attribute was a skipped gel-coat
-                    if ptal.attribute_id.pair_with_previous and last_skipped_was_gelcoat:
-                        _logger.info(f"⏭️ Skipping paired attribute '{ptal.attribute_id.name}' because previous gel-coat was skipped")
-                        last_skipped_was_gelcoat = False  # Reset for next iteration
-                        last_was_product_name = False
-                        continue
-                    
-                    if not gel_coat_required and is_gelcoat_attr and not is_gel_coat_req_attr:
-                        _logger.info(f"⏭️ Skipping Gel-coat attribute '{ptal.attribute_id.name}' because Gel Coat REQ is No")
-                        last_skipped_was_gelcoat = True  # Mark that we skipped a gel-coat attribute
-                        last_was_product_name = False
-                        continue
-                    
-                    # Reset the flag if we're processing a non-gel-coat attribute
-                    last_skipped_was_gelcoat = False
 
                     # Find selected PTAVs for this line
                     selected_ptavs = attribute_values.filtered(lambda v: v.attribute_line_id == ptal)
                     
-                    _logger.info(f"🔍 Processing attribute '{ptal.attribute_id.name}': found {len(selected_ptavs)} selected values")
-                    
                     if not selected_ptavs:
-                        _logger.info(f"⚠️ No selected values for '{ptal.attribute_id.name}', skipping")
                         continue
 
                     # Get display values
@@ -417,17 +318,14 @@ class ProductConfiguratorController(Controller):
                         else:
                             val = ptav.name
                         display_values.append(val)
-                        _logger.info(f"  📝 Value for '{ptal.attribute_id.name}': {val}")
                     
                     # Filter out empty or '0' values
                     display_values = [v for v in display_values if v and v != '0']
                     
                     if not display_values:
-                        _logger.info(f"⚠️ All values filtered out for '{ptal.attribute_id.name}', skipping")
                         continue
 
                     value_str = ", ".join(display_values)
-                    _logger.info(f"✅ Adding to description: '{ptal.attribute_id.name}: {value_str}'")
 
                     # Handle Pair with Previous
                     if ptal.attribute_id.pair_with_previous and attribute_lines:
@@ -436,31 +334,8 @@ class ProductConfiguratorController(Controller):
                     else:
                         # New line
                         attribute_lines.append(f"• {ptal.attribute_id.name}: {value_str}")
-                    
-                    # Update tracking flags
-                    last_was_product_name = is_product_name
-                    
-                    # Update last_was_gel_coat_req_no
-                    if ptal.attribute_id.pair_with_previous and attribute_lines:
-                        # Appended to existing line. Flag state remains unchanged (effectively False because we skipped if True)
-                        pass
-                    else:
-                        # New line
-                        if is_gel_coat_req_attr and "no" in value_str.lower():
-                            last_was_gel_coat_req_no = True
-                        else:
-                            last_was_gel_coat_req_no = False
-
 
                 attribute_description = "\n".join(attribute_lines) if attribute_lines else ""
-                print("\n" + "="*80)
-                print(f"📋 ATTRIBUTE DESCRIPTION DEBUG:")
-                print(f"   Total attributes: {len(attribute_lines)}")
-                print(f"   Gel coat required: {gel_coat_required}")
-                print(f"   Description:\n{attribute_description}")
-                print("="*80 + "\n")
-                _logger.info(f"📋 Final attribute_description:\n{attribute_description}")
-                _logger.info(f"📋 Total attributes in description: {len(attribute_lines)}")
 
                 # =========================
                 # BUILD DISPLAY NAME
@@ -470,24 +345,13 @@ class ProductConfiguratorController(Controller):
                 else:
                     base_name = product_variant.name
 
-                # Attributes summary for display name (SKIP file_upload, is_quantity, gel-coat if not required)
+                # Attributes summary for display name (SKIP file_upload)
                 attributes_summary_parts = []
                 for attr_value in attribute_values:
                     if attr_value.attribute_id.display_type == "file_upload":
                         continue
                     if attr_value.attribute_id.is_quantity:
                         continue
-                    
-                    # 🔥 Skip gel-coat attributes if Gel Coat REQ is "No"
-                    attr_name_lower = attr_value.attribute_id.name.lower() if attr_value.attribute_id.name else ""
-                    is_gel_coat_req_attr = "gel coat req" in attr_name_lower or "gelcoat req" in attr_name_lower
-                    is_gelcoat_attr = (
-                        attr_value.attribute_id.is_gelcoat_required_flag or 
-                        ("gel" in attr_name_lower and "coat" in attr_name_lower and "req" not in attr_name_lower)
-                    )
-                    if not gel_coat_required and is_gelcoat_attr and not is_gel_coat_req_attr:
-                        continue
-                    
                     if not attr_value.is_custom:
                         if attr_value.attribute_id.display_type == "m2o":
                             if attr_value.m2o_res_id:
@@ -538,11 +402,27 @@ class ProductConfiguratorController(Controller):
                     full_description = base_description
 
                 # =========================
-                # EXISTING LINE CHECK - REMOVED
+                # EXISTING LINE CHECK
                 # =========================
-                # Always create a new line when user explicitly adds from configurator
-                # This allows adding the same product multiple times
-                existing_line = False
+                def _get_existing_line(lead, template, ptav_ids):
+                    lines = request.env['crm.material.line'].sudo().search([
+                        ('lead_id', '=', lead.id),
+                        ('product_template_id', '=', template.id),
+                    ], limit=1)
+                    for line in lines:
+                        if line.product_id:
+                            existing_ptav_ids = set(
+                                line.product_id.product_template_attribute_value_ids.ids
+                            )
+                            if set(ptav_ids) == existing_ptav_ids:
+                                return line
+                    return False
+
+                # If file_upload present, always create new line
+                if has_file_upload_ptav:
+                    existing_line = False
+                else:
+                    existing_line = _get_existing_line(lead, template, ptav_ids)
 
                 # =========================
                 # PREPARE LINE VALUES
@@ -576,28 +456,6 @@ class ProductConfiguratorController(Controller):
                 else:
                     _logger.info("⚠️ No file_upload payload received")
 
-                # NEW: SAVE CONDITIONAL FILE TO LINE
-                if conditional_file_data and conditional_file_name:
-                    try:
-                        # Remove data URI prefix if present
-                        if ',' in conditional_file_data:
-                            conditional_file_data = conditional_file_data.split(',')[1]
-                        
-                        # Save to conditional file fields
-                        line_vals['boq_attachment_id'] = conditional_file_data
-                        line_vals['boq_attachment_name'] = conditional_file_name
-
-                        _logger.info(
-                            f"✅ Conditional file will be saved to line:\n"
-                            f"    ➤ Name: {conditional_file_name}\n"
-                            f"    ➤ Size: {len(conditional_file_data)} chars (base64)"
-                        )
-                    except Exception as e:
-                        _logger.error(f"❌ Conditional file processing failed: {e}")
-                        _logger.exception("Full traceback:")
-                else:
-                    _logger.info("⚠️ No conditional_file_upload payload received")
-
                 # Optional fields
                 if uom_id:
                     line_vals['product_uom_id'] = uom_id
@@ -610,9 +468,12 @@ class ProductConfiguratorController(Controller):
                 if full_description:
                     line_vals['description'] = full_description
                 
-                # Set default price from product
-                if product_variant:
-                    line_vals['price'] = product_variant.lst_price
+                # Auto-populate price from product's list price
+                line_vals['price'] = product_variant.list_price or 0.0
+                
+                # Auto-populate taxes from product template
+                if product_variant.product_tmpl_id.taxes_id:
+                    line_vals['tax_id'] = [(6, 0, product_variant.product_tmpl_id.taxes_id.ids)]
 
                 # Custom attribute values
                 if custom_attribute_values:
@@ -672,44 +533,17 @@ class ProductConfiguratorController(Controller):
                 )
                 raise
 
+        try:
+            create_or_update_material_line(main_product, lead)
+            for opt in optional_products:
+                create_or_update_material_line(opt, lead)
 
-        # Retry logic for concurrent update errors
-        max_retries = 3
-        retry_delay = 0.2  # Start with 200ms delay
-        last_error = None
-        
-        for attempt in range(max_retries):
-            try:
-                create_or_update_material_line(main_product, lead)
-                for opt in optional_products:
-                    create_or_update_material_line(opt, lead)
-
-                request.env.cr.commit()
-                return {'success': True}
-            except Exception as e:
-                last_error = e
-                error_msg = str(e).lower()
-                
-                # Check if it's a concurrent update error and we have retries left
-                if "concurrent update" in error_msg and attempt < max_retries - 1:
-                    _logger.warning(
-                        f"[CRM Configurator] Concurrent update error on attempt {attempt + 1}/{max_retries}, "
-                        f"retrying in {retry_delay}s..."
-                    )
-                    request.env.cr.rollback()
-                    import time
-                    time.sleep(retry_delay)
-                    retry_delay *= 2  # Exponential backoff
-                    continue
-                else:
-                    # Last attempt or different error
-                    _logger.error(f"[CRM Configurator] Fatal error after {attempt + 1} attempts: {repr(e)}")
-                    request.env.cr.rollback()
-                    return {'success': False, 'error': str(e)}
-        
-        # Should not reach here, but just in case
-        _logger.error(f"[CRM Configurator] All retries exhausted: {repr(last_error)}")
-        return {'success': False, 'error': str(last_error)}
+            request.env.cr.commit()
+            return {'success': True}
+        except Exception as e:
+            _logger.error(f"[CRM Configurator] Fatal error: {repr(e)}")
+            request.env.cr.rollback()
+            return {'success': False, 'error': str(e)}
 
     # -------------------------------------------------------------------------
     # Helpers
@@ -745,10 +579,10 @@ class ProductConfiguratorController(Controller):
             attribute_lines=[
                 dict(
                     id=ptal.id,
-                    # ATTRIBUTE meta (with m2o model info and pair_with_previous)
+                    # ATTRIBUTE meta (with m2o model info)
                     attribute=dict(
                         **ptal.attribute_id.read(
-                            ['id', 'name', 'display_type', 'm2o_model_id', 'pair_with_previous', 'is_width_check', 'is_quantity', 'is_gelcoat_required_flag']
+                            ['id', 'name', 'display_type', 'm2o_model_id']
                         )[0],
                         m2o_values=(
                             [
@@ -771,7 +605,7 @@ class ProductConfiguratorController(Controller):
                     attribute_values=[
                         dict(
                             **ptav.read(
-                                ['name', 'html_color', 'image', 'is_custom', 'm2o_res_id', 'required_file']
+                                ['name', 'html_color', 'image', 'is_custom', 'm2o_res_id']
                             )[0]
                         )
                         for ptav in ptal.product_template_value_ids

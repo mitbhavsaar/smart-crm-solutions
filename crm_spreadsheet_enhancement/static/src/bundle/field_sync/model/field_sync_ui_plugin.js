@@ -42,7 +42,7 @@ export class FieldSyncUIPlugin extends OdooUIPlugin {
     async getRecordIdFromList(listId, indexInList = 0) {
         try {
             console.log(`🔍 [getRecordIdFromList] List: ${listId}, Index: ${indexInList}`);
-            
+
             const list = this.getters.getListDefinition(listId);
             if (!list) {
                 console.error(`❌ List definition not found: ${listId}`);
@@ -58,12 +58,12 @@ export class FieldSyncUIPlugin extends OdooUIPlugin {
                 }
 
                 const [field, operator, value] = condition;
-                
+
                 if (field === 'id' && operator === '=') {
                     recordId = parseInt(value);
                     break;
                 }
-                
+
                 if (field === 'id' && operator === 'in' && Array.isArray(value)) {
                     if (indexInList < value.length) {
                         recordId = parseInt(value[indexInList]);
@@ -110,7 +110,7 @@ export class FieldSyncUIPlugin extends OdooUIPlugin {
                 console.log(`📋 Processing list: ${list.id} (${list.name}) from sheet: ${list.sheetId}`);
 
                 const recordId = await this.getRecordIdFromList(list.id, 0);
-                
+
                 if (!recordId) {
                     console.error(`❌ No record ID for list ${list.id}, skipping`);
                     errors.push(`No record found for list ${list.id}`);
@@ -121,7 +121,7 @@ export class FieldSyncUIPlugin extends OdooUIPlugin {
 
                 const recordUpdates = {};
                 const allFieldSyncs = [...this.getters.getAllFieldSyncs()];
-                
+
                 for (const [position, fieldSync] of allFieldSyncs) {
                     // ✅ CHANGED: Remove sheetId check - process field syncs from ALL sheets
                     if (fieldSync.listId !== list.id) {
@@ -130,14 +130,14 @@ export class FieldSyncUIPlugin extends OdooUIPlugin {
 
                     const { fieldName } = fieldSync;
                     const cell = this.getters.getEvaluatedCell(position);
-                    
+
                     if (cell.type === "empty" || cell.value === "" || cell.value === null) {
                         continue;
                     }
 
                     // ✅ Use formattedValue for all fields
                     let serverValue;
-                    
+
                     if (cell.type === "number") {
                         serverValue = cell.value;
                     } else if (cell.type === "boolean") {
@@ -145,7 +145,7 @@ export class FieldSyncUIPlugin extends OdooUIPlugin {
                     } else {
                         serverValue = cell.formattedValue || cell.value || "";
                     }
-                    
+
                     recordUpdates[fieldName] = serverValue;
                     console.log(`📝 Field ${fieldName} = ${serverValue} from sheet: ${position.sheetId}`);
                 }
@@ -173,7 +173,7 @@ export class FieldSyncUIPlugin extends OdooUIPlugin {
     getActiveSheetListIds() {
         const activeSheetId = this.getters.getActiveSheetId();
         const allLists = this.getters.getMainLists();
-        
+
         return allLists
             .filter(list => list.sheetId === activeSheetId)
             .map(list => list.id);
@@ -182,17 +182,17 @@ export class FieldSyncUIPlugin extends OdooUIPlugin {
     isFieldSyncFromActiveSheet(fieldSync, position) {
         const activeSheetId = this.getters.getActiveSheetId();
         const activeSheetLists = this.getActiveSheetListIds();
-        
-        return position.sheetId === activeSheetId && 
-               activeSheetLists.includes(fieldSync.listId);
+
+        return position.sheetId === activeSheetId &&
+            activeSheetLists.includes(fieldSync.listId);
     }
 
     getFieldSyncsForList(listId) {
         const fieldSyncs = [];
-        
+
         try {
             const allFieldSyncs = this.getters.getAllFieldSyncs();
-            
+
             if (allFieldSyncs instanceof Map) {
                 for (const [key, fieldSync] of allFieldSyncs) {
                     if (fieldSync.listId === listId) {
@@ -223,7 +223,7 @@ export class FieldSyncUIPlugin extends OdooUIPlugin {
         } catch (error) {
             console.error("Error getting field syncs for list:", error);
         }
-        
+
         return fieldSyncs;
     }
 
@@ -239,7 +239,7 @@ export class FieldSyncUIPlugin extends OdooUIPlugin {
                     };
                 }
             }
-            
+
             const position = JSON.parse(key);
             if (position.sheetId && position.col !== undefined && position.row !== undefined) {
                 return position;
@@ -247,18 +247,18 @@ export class FieldSyncUIPlugin extends OdooUIPlugin {
         } catch {
             // Parsing failed
         }
-        
+
         return { sheetId: this.getters.getActiveSheetId(), col: 0, row: 0 };
     }
 
     async checkFieldConflicts() {
         const errors = [];
         const lists = this.getters.getMainLists();
-        
+
         for (const list of lists) {
             const listFieldSyncs = this.getFieldSyncsForList(list.id);
             const syncsByIndex = {};
-            
+
             for (const fieldSync of listFieldSyncs) {
                 const index = fieldSync.indexInList;
                 if (!syncsByIndex[index]) {
@@ -272,15 +272,15 @@ export class FieldSyncUIPlugin extends OdooUIPlugin {
                 if (!recordId) continue;
 
                 const fieldCount = {};
-                
+
                 for (const fieldSync of fieldSyncs) {
-                    const position = { 
-                        sheetId: fieldSync.sheetId, 
-                        col: fieldSync.col, 
-                        row: fieldSync.row 
+                    const position = {
+                        sheetId: fieldSync.sheetId,
+                        col: fieldSync.col,
+                        row: fieldSync.row
                     };
                     const cell = this.getters.getEvaluatedCell(position);
-                    
+
                     if (cell.type !== "empty" && cell.value !== "") {
                         fieldCount[fieldSync.fieldName] = (fieldCount[fieldSync.fieldName] || 0) + 1;
                     }
@@ -312,7 +312,7 @@ export class FieldSyncUIPlugin extends OdooUIPlugin {
                 castToServerValue: (cell) => cell.formattedValue,
             };
         }
-        
+
         switch (fieldType) {
             case "float":
             case "monetary":
@@ -326,6 +326,23 @@ export class FieldSyncUIPlugin extends OdooUIPlugin {
                     checkType: (cell) => cell.type === "number" && Number.isInteger(cell.value),
                     error: _t("It should be an integer ID."),
                     castToServerValue: (cell) => cell.value,
+                };
+            case "many2many":
+                return {
+                    checkType: (cell) => true, // Flexible for M2M
+                    error: "",
+                    castToServerValue: (cell) => {
+                        if (cell.type === "number" && Number.isInteger(cell.value)) {
+                            return [[6, 0, [cell.value]]];
+                        }
+                        if (typeof cell.value === "string") {
+                            const ids = cell.value.split(',').map(v => parseInt(v.trim())).filter(v => !isNaN(v));
+                            if (ids.length > 0) {
+                                return [[6, 0, ids]];
+                            }
+                        }
+                        return cell.value; // Fallback
+                    },
                 };
             case "integer":
                 return {
@@ -352,7 +369,7 @@ export class FieldSyncUIPlugin extends OdooUIPlugin {
 
     drawLayer({ ctx }, layer) {
         const activeSheetId = this.getters.getActiveSheetId();
-        
+
         try {
             const allFieldSyncs = this.getters.getAllFieldSyncs();
             let fieldSyncEntries = [];
@@ -367,7 +384,7 @@ export class FieldSyncUIPlugin extends OdooUIPlugin {
 
             for (const [key, fieldSync] of fieldSyncEntries) {
                 const position = this.parsePositionFromKey(key);
-                
+
                 if (position.sheetId !== activeSheetId) {
                     continue;
                 }

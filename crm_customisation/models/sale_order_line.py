@@ -159,6 +159,7 @@ class SaleOrder(models.Model):
             ])
             for mo in mos:
                 mo.write({
+                    'raisin_type_id': line.raisin_type_id.id if line.raisin_type_id else False,
                     'ask_for_delivery_date': self.ask_for_delivery_date,
                     'delivery_date': self.delivery_date,
                 })
@@ -175,10 +176,36 @@ class SaleOrderLine(models.Model):
     width = fields.Float(string="Width")
     thickness = fields.Float(string="Thickness")
     raw_material = fields.Char(string="Raw Material (Brand)")
+    raisin_type_id = fields.Many2one("raisin.type", string="Raisin Type")
     height = fields.Float(string="Height")
     length = fields.Float(string="Length")
-    
 
+    attached_file_id = fields.Binary(
+        string="Attached File",
+        attachment=True,
+    )
+    attached_file_name = fields.Char(
+        string="Attached File Name",
+    )
+
+    @api.depends('product_id', 'company_id')
+    def _compute_tax_id(self):
+        """Override to preserve taxes passed from CRM"""
+        crm_lines = self.filtered(lambda l: l.env.context.get('from_crm_lead') and l.tax_id)
+        other_lines = self - crm_lines
+        
+        # For CRM lines with taxes, do nothing (keep existing)
+        # For other lines, call super
+        if other_lines:
+            super(SaleOrderLine, other_lines)._compute_tax_id()
+    
+    @api.onchange('product_id')
+    def _onchange_product_id_set_raisin_type(self):
+        """Auto-set raisin_type_id from selected product."""
+        if self.product_id and self.product_id.raisin_type_id:
+            self.raisin_type_id = self.product_id.raisin_type_id.id
+        else:
+            self.raisin_type_id = False
     
     # Inside SaleOrderLine class
 
@@ -189,6 +216,9 @@ class SaleOrderLine(models.Model):
             values.update({
                 'ask_for_delivery_date': sale_order.ask_for_delivery_date,
                 'delivery_date': sale_order.delivery_date,
+                'raisin_type_id': self.raisin_type_id.id if self.raisin_type_id else False,
+                'attached_file_id': self.attached_file_id,
+                'attached_file_name': self.attached_file_name,
             })
         return values
 
@@ -196,7 +226,14 @@ class SaleOrderLine(models.Model):
     def _prepare_mo_values(self, product_id, product_qty, product_uom, location_src_id, name, origin, values):
         res = super()._prepare_mo_values(product_id, product_qty, product_uom, location_src_id, name, origin, values)
 
-
+        if values.get('raisin_type_id'):
+            res['raisin_type_id'] = values['raisin_type_id']
+        
+        if values.get('attached_file_id'):
+            res['attached_file_id'] = values['attached_file_id']
+        
+        if values.get('attached_file_name'):
+            res['attached_file_name'] = values['attached_file_name']
         
         return res
 
@@ -205,7 +242,8 @@ class StockRule(models.Model):
 
     def _prepare_mo_values(self, product_id, product_qty, product_uom, location_src_id, name, origin, values):
         res = super()._prepare_mo_values(product_id, product_qty, product_uom, location_src_id, name, origin, values)
-
+        if values.get('raisin_type_id'):
+            res['raisin_type_id'] = values['raisin_type_id']
         return res
 
 class SupplierInfo(models.Model):

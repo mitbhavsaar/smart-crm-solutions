@@ -23,7 +23,7 @@ class SaleOrderSpreadsheet(models.Model):
     _description = 'Sales Order Spreadsheet'
 
     name = fields.Char(required=True)
-    order_id = fields.Many2one('sale.order', string="Sales Order", ondelete='cascade')
+    order_id = fields.Many2one('sale.order', ondelete='set null')
     company_id = fields.Many2one('res.company', default=lambda self: self.env.company)
     raw_spreadsheet_data = fields.Text("Raw Spreadsheet Data")
 
@@ -326,7 +326,8 @@ class SaleOrderSpreadsheet(models.Model):
         line_id = self._context.get('order_line_id')
         if not line_id:
             return
-
+        
+        commands = []
         line = self.env['sale.order.line'].browse(line_id)
         if not line.exists():
             return
@@ -353,31 +354,28 @@ class SaleOrderSpreadsheet(models.Model):
                 
             row_data.append(cell_value)
 
-        commands = [
-            {
-                'type': 'CREATE_SHEET',
-                'sheetId': sheet_id,
-                'name': product_name,
-            },
-            {
-                'type': 'REGISTER_ODOO_LIST',
-                'listId': list_id,
-                'model': 'sale.order.line',
-                'columns': SALES_ORDER_LINE_FIELDS,
-                'domain': [['id', '=', line.id]],
-                'context': {},
-                'orderBy': [],
-            },
-            {
-                'type': 'RE_INSERT_ODOO_LIST',
-                'sheetId': sheet_id,
-                'col': 0,
-                'row': 0,
-                'id': list_id,
-                'linesNumber': 1,
-                'columns': columns,
-            },
-        ]
+        # Always create sheet and insert list first (Default behavior)
+        commands.append({'type': 'CREATE_SHEET', 'sheetId': sheet_id, 'name': product_name})
+        
+        commands.append({
+            'type': 'REGISTER_ODOO_LIST',
+            'listId': list_id,
+            'model': 'sale.order.line',
+            'columns': SALES_ORDER_LINE_FIELDS,
+            'domain': [['id', '=', line.id]],
+            'context': {},
+            'orderBy': [],
+        })
+        
+        commands.append({
+            'type': 'RE_INSERT_ODOO_LIST',
+            'sheetId': sheet_id,
+            'col': 0,
+            'row': 0,
+            'id': list_id,
+            'linesNumber': 1,
+            'columns': columns,
+        })
 
         # Insert cell values
         for col_idx, (col_meta, cell_value) in enumerate(zip(columns, row_data)):
@@ -389,28 +387,22 @@ class SaleOrderSpreadsheet(models.Model):
                 'content': str(cell_value) if cell_value not in (None, False, '') else '',
             })
 
-        commands.extend([
-            {
-                'type': 'CREATE_TABLE',
-                'sheetId': sheet_id,
-                'tableType': 'static',
-                'ranges': [{
-                    '_sheetId': sheet_id,
-                    '_zone': {'top': 0, 'bottom': 1, 'left': 0, 'right': len(columns) - 1}
-                }],
-                'config': {
-                    'firstColumn': False,
-                    'hasFilters': True,
-                    'totalRow': False,
-                    'bandedRows': True,
-                    'styleId': 'TableStyleMedium5',
-                }
-            },
-            {
-                'type': 'UPDATE_ODOO_LIST_DATA',
-                'listId': list_id,
+        commands.append({
+            'type': 'CREATE_TABLE',
+            'sheetId': sheet_id,
+            'tableType': 'static',
+            'ranges': [{
+                '_sheetId': sheet_id,
+                '_zone': {'top': 0, 'bottom': 1, 'left': 0, 'right': len(columns) - 1}
+            }],
+            'config': {
+                'firstColumn': False,
+                'hasFilters': True,
+                'totalRow': False,
+                'bandedRows': True,
+                'styleId': 'TableStyleMedium5',
             }
-        ])
+        })
 
         # Check for template and append if exists
         template_data = None
@@ -421,7 +413,8 @@ class SaleOrderSpreadsheet(models.Model):
                 pass
 
         if template_data:
-            # Apply Template Content with OFFSET 4 (Header + Data + 2 Gap)
+            _logger.info(f"📄 Merging template for sale line {line_id} with offset")
+            # Apply Template Content with OFFSET 4
             template_cmds = self._get_template_commands(sheet_id, template_data, row_offset=4)
             commands.extend(template_cmds)
         
@@ -435,6 +428,66 @@ class SaleOrderSpreadsheet(models.Model):
                 for line in rec.order_id.order_line:
                     rec.with_context(order_line_id=line.id)._dispatch_insert_list_revision()
         return records
+
+    def _empty_spreadsheet_data(self):
+        """Return sales spreadsheet structure"""
+        data = super()._empty_spreadsheet_data() or {}
+        data.setdefault('lists', {})
+        data['sheets'] = []
+        
+        if not self.order_id or not self.order_id.order_line:
+            return data
+
+        for line in self.order_id.order_line:
+            sheet_id = f"sheet_sales_{line.id}"
+            list_id = f"sales_{line.id}"
+            product_name = (line.product_id.display_name or "Untitled")[:31]
+
+            # Check for template
+            template_data = None
+            if line.product_id.product_tmpl_id.categ_id.spreadsheet_data:
+                try:
+                    template_data = json.loads(line.product_id.product_tmpl_id.categ_id.spreadsheet_data)
+                except Exception:
+                    pass
+
+            if template_data and template_data.get('sheets'):
+                # Use template sheet
+                template_sheet = template_data['sheets'][0]
+                import copy
+                sheet_json = copy.deepcopy(template_sheet)
+                sheet_json['id'] = sheet_id
+                sheet_json['name'] = product_name
+                
+                # ✅ SANITIZE: Ensure all cell content is string AND remove invalid format
+                if 'cells' in sheet_json:
+                    for cell_key, cell_val in sheet_json['cells'].items():
+                        if 'content' in cell_val:
+                            cell_val['content'] = str(cell_val['content']) if cell_val['content'] is not None else ""
+                        if 'format' in cell_val:
+                            del cell_val['format']
+
+                data['sheets'].append(sheet_json)
+            else:
+                data['sheets'].append({
+                    'id': sheet_id,
+                    'name': product_name,
+                })
+
+            data['lists'][list_id] = {
+                'id': list_id,
+                'model': 'sale.order.line',
+                'columns': SALES_ORDER_LINE_FIELDS,
+                'domain': [['id', '=', line.id]],
+                'sheetId': sheet_id,
+                'name': product_name,
+                'context': {},
+                'orderBy': [],
+                'fieldMatching': {
+                    'order_line': {'chain': 'order_id', 'type': 'many2one'},
+                },
+            }
+        return data
 
     def _get_template_commands(self, sheet_id, template_data, row_offset=0):
         """
@@ -500,66 +553,6 @@ class SaleOrderSpreadsheet(models.Model):
                 })
                 
         return commands
-
-    def _empty_spreadsheet_data(self):
-        """Return sales spreadsheet structure"""
-        data = super()._empty_spreadsheet_data() or {}
-        data.setdefault('lists', {})
-        data['sheets'] = []
-        
-        if not self.order_id or not self.order_id.order_line:
-            return data
-
-        for line in self.order_id.order_line:
-            sheet_id = f"sheet_sales_{line.id}"
-            list_id = f"sales_{line.id}"
-            product_name = (line.product_id.display_name or "Untitled")[:31]
-
-            # Check for template
-            template_data = None
-            if line.product_id.product_tmpl_id.categ_id.spreadsheet_data:
-                try:
-                    template_data = json.loads(line.product_id.product_tmpl_id.categ_id.spreadsheet_data)
-                except Exception:
-                    pass
-
-            if template_data and template_data.get('sheets'):
-                # Use template sheet
-                template_sheet = template_data['sheets'][0]
-                import copy
-                sheet_json = copy.deepcopy(template_sheet)
-                sheet_json['id'] = sheet_id
-                sheet_json['name'] = product_name
-                
-                # ✅ SANITIZE: Ensure all cell content is string AND remove invalid format
-                if 'cells' in sheet_json:
-                    for cell_key, cell_val in sheet_json['cells'].items():
-                        if 'content' in cell_val:
-                            cell_val['content'] = str(cell_val['content']) if cell_val['content'] is not None else ""
-                        if 'format' in cell_val:
-                            del cell_val['format']
-
-                data['sheets'].append(sheet_json)
-            else:
-                data['sheets'].append({
-                    'id': sheet_id,
-                    'name': product_name,
-                })
-
-            data['lists'][list_id] = {
-                'id': list_id,
-                'model': 'sale.order.line',
-                'columns': SALES_ORDER_LINE_FIELDS,
-                'domain': [['id', '=', line.id]],
-                'sheetId': sheet_id,
-                'name': product_name,
-                'context': {},
-                'orderBy': [],
-                'fieldMatching': {
-                    'order_line': {'chain': 'order_id', 'type': 'many2one'},
-                },
-            }
-        return data
 
     def _sync_sheets_with_order_lines(self):
         """Sync sheets with order lines"""

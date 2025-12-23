@@ -3,18 +3,27 @@ from odoo import api, fields, models, _
 import json
 import logging
 import re
-import openpyxl
 import uuid
+import openpyxl
+import openpyxl
+from openpyxl.utils import get_column_letter, column_index_from_string
 from openpyxl.utils import get_column_letter, column_index_from_string
 from openpyxl.utils.cell import range_boundaries
 from openpyxl.formula.translate import Translator
-
+import logging
 _logger = logging.getLogger(__name__)
 
+
 CRM_MATERIAL_LINE_BASE_FIELDS = [
-    'product_template_id',
-    'quantity',
+    'product_template_id',  # Product
+    'quantity',              # Quantity
+    'product_uom_id',        # UOM
+    'price',                 # Price
+    'discount',              # Discount
+    'tax_id',                # Tax
+    'price_subtotal',        # Subtotal
 ]
+
 
 class CrmLeadSpreadsheet(models.Model):
     _name = 'crm.lead.spreadsheet'
@@ -33,13 +42,17 @@ class CrmLeadSpreadsheet(models.Model):
     @api.model
     def get_list_data(self, model, list_id, field_names):
         """
-        ✅ THIS IS CALLED BY SPREADSHEET JS
-        Override base spreadsheet method to handle dynamic attributes
+        Override base spreadsheet method to handle dynamic attributes.
         """
-        
+        _logger.info(
+            f"🟡 [Spreadsheet] get_list_data called: model={model}, "
+            f"list_id={list_id}, fields={field_names}"
+        )
+
         if model != 'crm.material.line':
+            _logger.info(f"⚪ Not CRM model, using super: {model}")
             return super().get_list_data(model, list_id, field_names)
-        
+
         try:
             line_id = int(list_id)
         except (ValueError, TypeError):
@@ -48,13 +61,14 @@ class CrmLeadSpreadsheet(models.Model):
 
         line = self.env['crm.material.line'].browse(line_id)
         if not line.exists():
-            _logger.warning(f"❌ Material line {list_id} not found")
+            _logger.warning(f"❌ Material line {line_id} not found")
             return []
 
-        
+        _logger.info(f"✅ Found line {line_id}: {line.product_template_id.display_name}")
+
         # Get attributes_json FIRST
         attrs = line.attributes_json or {}
-        
+        _logger.info(f"📦 attributes_json: {attrs}")
 
         row = {"id": line.id}
 
@@ -66,13 +80,13 @@ class CrmLeadSpreadsheet(models.Model):
                     row[field] = val.display_name
                 else:
                     row[field] = val
-                
+                _logger.info(f"✅ Standard field '{field}' = '{row[field]}'")
             else:
                 # Dynamic attribute from attributes_json
                 row[field] = attrs.get(field, "")
-                
+                _logger.info(f"🔵 Dynamic field '{field}' = '{row[field]}'")
 
-        
+        _logger.info(f"🟡 Final row data: {row}")
         return [row]
 
     # ------------------------------------------------------------------
@@ -83,7 +97,7 @@ class CrmLeadSpreadsheet(models.Model):
         Internal method for other operations
         """
         self.ensure_one()
-        
+
         try:
             list_id_int = int(list_id)
         except (ValueError, TypeError):
@@ -95,7 +109,8 @@ class CrmLeadSpreadsheet(models.Model):
 
         row = {
             'id': line.id,
-            'product_template_id': line.product_template_id.display_name if line.product_template_id else '',
+            'product_template_id': line.product_template_id.display_name
+            if line.product_template_id else '',
             'quantity': line.quantity or 0,
         }
 
@@ -131,7 +146,9 @@ class CrmLeadSpreadsheet(models.Model):
         for rec in records:
             if rec.lead_id and rec.lead_id.material_line_ids:
                 for line in rec.lead_id.material_line_ids:
-                    rec.with_context(material_line_id=line.id)._dispatch_insert_list_revision()
+                    rec.with_context(
+                        material_line_id=line.id
+                    )._dispatch_insert_list_revision()
         return records
 
     # ------------------------------------------------------------------
@@ -146,7 +163,7 @@ class CrmLeadSpreadsheet(models.Model):
         data.update({
             'lead_id': self.lead_id.id if self.lead_id else False,
             'lead_display_name': self.lead_id.display_name if self.lead_id else False,
-            'sheet_id': self.id
+            'sheet_id': self.id,
         })
 
         spreadsheet_json = data.get('data') or {}
@@ -170,19 +187,13 @@ class CrmLeadSpreadsheet(models.Model):
             for rid in removed_ids:
                 if str(rid) in lists:
                     del lists[str(rid)]
-            sheets = [s for s in sheets if not any(str(rid) in json.dumps(s) for rid in removed_ids)]
+            sheets = [
+                s for s in sheets
+                if not any(str(rid) in json.dumps(s) for rid in removed_ids)
+            ]
 
         spreadsheet_json['lists'] = lists
         spreadsheet_json['sheets'] = sheets
-        
-        # 🔍 DEBUG: Log all sheets
-        _logger.info(f"📊 Total sheets in spreadsheet: {len(sheets)}")
-        for sheet in sheets:
-            sheet_id = sheet.get('id', 'unknown')
-            sheet_name = sheet.get('name', 'unnamed')
-            has_cells = 'cells' in sheet and len(sheet.get('cells', {})) > 0
-            cell_count = len(sheet.get('cells', {})) if 'cells' in sheet else 0
-            _logger.info(f"   📄 Sheet: {sheet_id} | Name: {sheet_name} | Cells: {cell_count} | Has data: {has_cells}")
 
         # 🎯 REORDER SHEETS: Main sheets first, then auxiliary sheets
         # Main sheets have IDs like "sheet_123" (material line sheets)
@@ -202,8 +213,6 @@ class CrmLeadSpreadsheet(models.Model):
         # Sort auxiliary sheets by priority
         def sheet_order(s):
             name = (s.get('name') or "").lower()
-            if "merged sheet" in name or "costing" in name:
-                return 0
             if "profile master" in name or "profile" in name:
                 return 1
             if "resin" in name:
@@ -220,9 +229,11 @@ class CrmLeadSpreadsheet(models.Model):
             first_main_sheet_id = main_sheets[0].get("id")
             data['active_sheet_id'] = first_main_sheet_id
             spreadsheet_json['active_sheet_id'] = first_main_sheet_id
-            
-        # ✅ CRITICAL FIX: Preload data for ALL lists
-        
+            _logger.info(f"📌 Active sheet set to: {first_main_sheet_id}")
+            _logger.info(f"📊 Sheet order: {[s.get('name') for s in spreadsheet_json['sheets']]}")
+
+        # ✅ Preload data for ALL lists
+        _logger.info("🔥 Preloading data for all lists...")
         for list_id, list_config in lists.items():
             try:
                 line_id = int(list_id)
@@ -230,89 +241,10 @@ class CrmLeadSpreadsheet(models.Model):
                 if line.exists():
                     columns = list_config.get('columns', [])
                     list_data = self.get_list_data('crm.material.line', list_id, columns)
-                    
-
-
-                    if list_data:
-                        spreadsheet_json['lists'][list_id]['data'] = list_data
+                    _logger.info(f"✅ Preloaded list {list_id}: {list_data}")
             except Exception as e:
                 _logger.error(f"❌ Failed to preload list {list_id}: {e}")
-        
-        # ✅ ENSURE VALIDATION RULES EXIST IN ALL SHEETS
-        _logger.info("🔍 Checking validation rules in all sheets...")
-        for sheet in spreadsheet_json.get('sheets', []):
-            # Check if this is a main sheet (has validations in template)
-            sheet_id = sheet.get('id', '')
-            _logger.info(f"   🔎 Sheet: {sheet_id} ({sheet.get('name')})")
-            _logger.info(f"      Has validations? {'validations' in sheet}")
-            _logger.info(f"      Has dataValidationRules? {sheet.get('dataValidationRules') is not None}")
-            _logger.info(f"      dataValidationRules count: {len(sheet.get('dataValidationRules', []))}")
-            
-            if sheet_id.startswith('sheet_'):
-                # This is a material line sheet - check if it needs validation rules
-                # First, check if sheet already has validations defined
-                has_validations_in_sheet = 'validations' in sheet
-                has_validation_rules = sheet.get('dataValidationRules') and len(sheet.get('dataValidationRules', [])) > 0
-                
-                # If no validations in sheet, try to load from template
-                validations_to_process = sheet.get('validations', [])
-                
-                if not has_validations_in_sheet:
-                    # Try to get validations from product category template
-                    try:
-                        line_id = int(sheet_id.replace('sheet_', ''))
-                        line = self.env['crm.material.line'].browse(line_id)
-                        if line.exists() and line.product_template_id.categ_id.spreadsheet_data:
-                            template_data = json.loads(line.product_template_id.categ_id.spreadsheet_data)
-                            if template_data and template_data.get('sheets'):
-                                main_sheet = template_data['sheets'][0]
-                                if 'validations' in main_sheet:
-                                    validations_to_process = main_sheet['validations']
-                                    _logger.info(f"   📋 Loaded {len(validations_to_process)} validations from template for {sheet.get('name')}")
-                    except Exception as e:
-                        _logger.warning(f"Failed to load validations from template: {e}")
-                
-                # Now process validations if we have any and no rules exist yet
-                if validations_to_process and not has_validation_rules:
-                    _logger.info(f"   ➕ Adding validation rules to sheet {sheet.get('name')}...")
-                    sheet['dataValidationRules'] = []
-                    for val in validations_to_process:
-                        for rng in val.get('ranges', []):
-                            try:
-                                from openpyxl.utils.cell import range_boundaries, get_column_letter
-                                min_col, min_row, max_col, max_row = range_boundaries(rng)
-                                for r in range(min_row, max_row + 1):
-                                    for c in range(min_col, max_col + 1):
-                                        cell_ref = f"{get_column_letter(c)}{r + 4}"  # +4 for header offset
-                                        rule_data = self._get_validation_rule(val, [])
-                                        if rule_data and rule_data.get('range'):
-                                            validation_rule = {
-                                                'id': uuid.uuid4().hex,
-                                                'isBlocking': False,
-                                                'ranges': [cell_ref],
-                                                'criterion': {
-                                                    'type': 'isValueInRange',
-                                                    'values': [rule_data['range']],
-                                                    'displayStyle': 'arrow'
-                                                }
-                                            }
-                                            sheet['dataValidationRules'].append(validation_rule)
-                                            _logger.info(f"      ✅ Added dropdown at {cell_ref}: {rule_data['range']}")
-                            except Exception as e:
-                                _logger.warning(f"Failed to add validation: {e}")
-                
-                # 🔍 DEBUG: Check for formulas that reference other sheets
-                if 'cells' in sheet:
-                    formula_count = 0
-                    for cell_ref, cell_data in sheet['cells'].items():
-                        content = cell_data.get('content', '')
-                        if isinstance(content, str) and content.startswith('=') and "'" in content:
-                            formula_count += 1
-                            if formula_count <= 5:  # Show first 5 formulas
-                                _logger.info(f"      🔢 Formula in {cell_ref}: {content[:80]}")
-                    if formula_count > 0:
-                        _logger.info(f"      📐 Total formulas with sheet references: {formula_count}")
-        
+
         data['data'] = spreadsheet_json
         self.raw_spreadsheet_data = json.dumps(spreadsheet_json)
 
@@ -324,139 +256,166 @@ class CrmLeadSpreadsheet(models.Model):
     def _get_material_line_columns(self, line):
         """
         Helper to construct columns for a material line sheet.
-        Removes 'UOM' and places 'Quantity UOM' next to 'quantity'.
-        Also removes Gel-coat column if 'Gel Coat REQ' is 'No'.
+        Returns base fields + dynamic attributes (excluding duplicates).
         """
-        # 1. Base Fields
+        # 1. Start with base fields
         columns = list(CRM_MATERIAL_LINE_BASE_FIELDS)
-
-        # 2. Dynamic Attributes
+        
+        # 2. Get dynamic attributes from attributes_json
         dynamic_keys = list(line.attributes_json.keys()) if isinstance(line.attributes_json, dict) else []
-
-
-
-        # Remove 'UOM' if present (User request: "default UOM... nahi chahiye")
-        # We filter it out from dynamic keys AND base fields (just in case)
-        if 'UOM' in dynamic_keys:
-            dynamic_keys.remove('UOM')
-        if 'uom_id' in columns:
-            columns.remove('uom_id')
-
-        # Remove 'Quantity' if present (It is already in base fields as 'quantity')
-        if 'Quantity' in dynamic_keys:
-            dynamic_keys.remove('Quantity')
-
-
-
-        # 3. Handle 'Quantity UOM' placement
-        qty_uom_key = "Quantity UOM"
-        has_qty_uom = False
-        if qty_uom_key in dynamic_keys:
-            has_qty_uom = True
-            dynamic_keys.remove(qty_uom_key)
-
-        # 4. Priority Logic for remaining attributes
+        
+        # 3. Create a mapping of field names to their common variations
+        # This helps filter out attributes that duplicate base fields
+        field_variations = {
+            'quantity': ['quantity', 'Quantity', 'qty', 'Qty'],
+            'product_template_id': ['product', 'Product', 'product_template_id'],
+            'product_uom_id': ['uom', 'UOM', 'uom_id', 'product_uom_id'],
+            'price': ['price', 'Price'],
+            'discount': ['discount', 'Discount'],
+            'tax_id': ['tax', 'Tax', 'tax_id', 'taxes'],
+            'price_subtotal': ['subtotal', 'Subtotal', 'price_subtotal'],
+        }
+        
+        # Build a set of all variations to exclude
+        exclude_variations = set()
+        for field in columns:
+            if field in field_variations:
+                exclude_variations.update(field_variations[field])
+        
+        # Filter out dynamic keys that match any variation
+        filtered_dynamic = [k for k in dynamic_keys if k not in exclude_variations]
+        
+        # 4. Priority ordering for product-specific attributes
         priority = []
         template = line.product_template_id
         if template:
             for ptal in template.attribute_line_ids:
                 attr_name = ptal.attribute_id.name
-                if attr_name in dynamic_keys:
+                if attr_name in filtered_dynamic:
                     priority.append(attr_name)
+                # Also check for UOM variants (e.g., "Width UOM")
                 uom_name = f"{attr_name} UOM"
-                if uom_name in dynamic_keys:
+                if uom_name in filtered_dynamic:
                     priority.append(uom_name)
-
+        
+        # 5. Build ordered list of dynamic attributes
         ordered_dynamic = []
-        dynamic_keys_copy = list(dynamic_keys)
-
+        remaining_dynamic = list(filtered_dynamic)
+        
+        # Add priority attributes first
         for p in priority:
-            if p in dynamic_keys_copy:
+            if p in remaining_dynamic:
                 ordered_dynamic.append(p)
-                dynamic_keys_copy.remove(p)
-
-        ordered_dynamic.extend(sorted(dynamic_keys_copy))
-
-        # 5. Assemble final list
-        # Insert Quantity UOM after quantity
-        if has_qty_uom:
-            if 'quantity' in columns:
-                idx = columns.index('quantity') + 1
-                columns.insert(idx, qty_uom_key)
-            else:
-                columns.append(qty_uom_key)
-
+                remaining_dynamic.remove(p)
+        
+        # Add remaining attributes alphabetically
+        ordered_dynamic.extend(sorted(remaining_dynamic))
+        
+        # 6. Combine base fields + ordered dynamic attributes
         columns.extend(ordered_dynamic)
+        
         return columns
 
-    def _get_template_commands(self, sheet_id, template_data, row_offset=0):
-        """
-        Generate commands to recreate the template sheet.
-        """
-        commands = []
+    # ------------------------------------------------------------------
+    # EMPTY DATA (initial load)
+    # ------------------------------------------------------------------
+    def _empty_spreadsheet_data(self):
+        data = super()._empty_spreadsheet_data() or {}
+        data.setdefault('lists', {})
+        data['sheets'] = []
+
+        if not self.lead_id or not self.lead_id.material_line_ids:
+            return data
+
+        # 🔄 NEW: Collect all sheets first, then reorder
+        main_sheets = []
+        auxiliary_sheets = []
         
-        # 1. Cells
-        if 'sheets' in template_data and template_data['sheets']:
-            template_sheet = template_data['sheets'][0]
-            
-            # Merges
-            from openpyxl.utils.cell import range_boundaries, get_column_letter
-            
-            for merge in template_sheet.get('merges', []):
+        for line in self.lead_id.material_line_ids:
+            sheet_id = f"sheet_{line.id}"
+            list_id = str(line.id)
+            product_name = (line.product_template_id.display_name or "Item")[:31]
+
+            columns = self._get_material_line_columns(line)
+
+            # Check for template
+            template_data = None
+            if line.product_template_id.categ_id.spreadsheet_data:
                 try:
-                    # merge is "A1:B2"
-                    min_col, min_row, max_col, max_row = range_boundaries(merge)
-                    # Shift rows
-                    min_row += row_offset
-                    max_row += row_offset
-                    
-                    new_range = f"{get_column_letter(min_col)}{min_row}:{get_column_letter(max_col)}{max_row}"
-                    commands.append({
-                        'type': 'ADD_MERGE',
-                        'sheetId': sheet_id,
-                        'target': [new_range]
-                    })
+                    template_data = json.loads(line.product_template_id.categ_id.spreadsheet_data)
                 except Exception:
                     pass
-                
-            # Columns (No offset needed for columns)
-            for col_idx, col_data in template_sheet.get('cols', {}).items():
-                commands.append({
-                    'type': 'RESIZE_COLUMNS_ROWS',
-                    'sheetId': sheet_id,
-                    'dimension': 'COL',
-                    'elements': [int(col_idx)],
-                    'size': col_data.get('width', 100) * 7 
-                })
-                
-            # Rows (Offset needed)
-            for row_idx, row_data in template_sheet.get('rows', {}).items():
-                commands.append({
-                    'type': 'RESIZE_COLUMNS_ROWS',
-                    'sheetId': sheet_id,
-                    'dimension': 'ROW',
-                    'elements': [int(row_idx) + row_offset],
-                    'size': row_data.get('size', 21)
-                })
 
-            # Cells (Offset needed)
-            for cell_ref, cell_data in template_sheet.get('cells', {}).items():
-                # Convert A1 to col/row
-                col_letter = "".join(filter(str.isalpha, cell_ref))
-                row_num = int("".join(filter(str.isdigit, cell_ref))) - 1
-                from openpyxl.utils import column_index_from_string
-                col_num = column_index_from_string(col_letter) - 1
+            if template_data and template_data.get('sheets'):
+                # 1. Main Sheet (Index 0)
+                template_sheet = template_data['sheets'][0]
+                # We need to deep copy to avoid modifying the cached template
+                import copy
+                sheet_json = copy.deepcopy(template_sheet)
+                sheet_json['id'] = sheet_id
+                sheet_json['name'] = product_name
                 
-                commands.append({
-                    'type': 'UPDATE_CELL',
-                    'sheetId': sheet_id,
-                    'col': col_num,
-                    'row': row_num + row_offset,
-                    'content': str(cell_data.get('content', '')) if cell_data.get('content') is not None else '',
-                })
-                
-        return commands
+                # ✅ SANITIZE: Ensure all cell content is string AND remove invalid format
+                if 'cells' in sheet_json:
+                    for cell_key, cell_val in sheet_json['cells'].items():
+                        if 'content' in cell_val:
+                            cell_val['content'] = str(cell_val['content']) if cell_val['content'] is not None else ""
+                        if 'format' in cell_val:
+                            del cell_val['format']
+                            
+                main_sheets.append(sheet_json)
 
+                # 2. Auxiliary Sheets (Index 1+) - Collect for sorting
+                for aux_sheet in template_data['sheets'][1:]:
+                    # Check if sheet with this ID already exists
+                    existing_ids = {s.get('id') for s in auxiliary_sheets}
+                    if aux_sheet.get('id') not in existing_ids:
+                        aux_copy = copy.deepcopy(aux_sheet)
+                        # Sanitize
+                        if 'cells' in aux_copy:
+                            for cell_key, cell_val in aux_copy['cells'].items():
+                                if 'content' in cell_val:
+                                    cell_val['content'] = str(cell_val['content']) if cell_val['content'] is not None else ""
+                                if 'format' in cell_val:
+                                    del cell_val['format']
+                        auxiliary_sheets.append(aux_copy)
+            else:
+                # Default behavior
+                main_sheets.append({'id': sheet_id, 'name': product_name})
+
+            data['lists'][list_id] = {
+                'id': list_id,
+                'model': 'crm.material.line',
+                'columns': columns,
+                'domain': [['id', '=', line.id]],
+                'sheetId': sheet_id,
+                'name': product_name,
+                'context': {},
+                'orderBy': [],
+                'fieldMatching': {
+                    'material_line_ids': {'chain': 'lead_id', 'type': 'many2one'},
+                },
+            }
+
+        # 🎯 SORT auxiliary sheets: Profile Master → Resin → Helper
+        def sheet_order(s):
+            name = (s.get('name') or "").lower()
+            if "profile master" in name or "profile" in name:
+                return 1
+            if "resin" in name:
+                return 2
+            if "helper" in name:
+                return 3
+            return 99
+
+        auxiliary_sheets.sort(key=sheet_order)
+
+        # ✅ Append in correct order: Main sheets first, then sorted auxiliaries
+        data['sheets'].extend(main_sheets)
+        data['sheets'].extend(auxiliary_sheets)
+
+        return data
+    
     def _shift_formula_rows(self, content, sheet_name, offset):
         if offset == 0 or not sheet_name:
             return content
@@ -505,6 +464,7 @@ class CrmLeadSpreadsheet(models.Model):
                 content = content.replace(f"'{old_main}'!", f"'{new_main}'!")
                 if ' ' not in old_main:
                     # Use regex to avoid partial matches
+                    import re
                     content = re.sub(
                         f"\\b{re.escape(old_main)}!",
                         f"'{new_main}'!",
@@ -538,7 +498,6 @@ class CrmLeadSpreadsheet(models.Model):
         content = content.replace("''", "'")
             
         return content
-
     def _get_validation_rule(self, val, all_sheet_names):
         """
         Convert Excel dropdown formula into correct Odoo Spreadsheet dataValidation rule.
@@ -547,21 +506,20 @@ class CrmLeadSpreadsheet(models.Model):
             • =Sheet!$A$2:$A$1000 range dropdown
         """
         f1 = str(val.get('formula1', '')).strip()
-        
+        _logger.info(f"🔍 Processing Validation Rule: {f1}")
 
         # -------- STATIC LIST -------- ("A,B,C")
         if (f1.startswith('"') and f1.endswith('"')) or ("," in f1 and not f1.startswith("=")):
             raw = f1.strip('"')
             values = [v.strip() for v in raw.split(',')]
-            
+            _logger.info(f"   👉 Static List Detected = {values}")
             return {'type': 'range', 'values': values, 'style': 'arrow'}
 
         # -------- RANGE DROPDOWN -------- (=Sheet!$A$2:$A$100)
         if f1.startswith("="):
-            f1 = f1[1:]  # remove "=" temporarily for cleaning
+            f1 = f1[1:]  # remove "="
 
-        # ✅ FIX: Do NOT remove '$'. Keep absolute references for dropdowns.
-        clean = f1.strip().strip('"')  
+        clean = f1.replace("$", "").strip().strip('"')  
 
         # auto-quote ALWAYS (Odoo prefers quoted sheet names for validation ranges)
         if "!" in clean:
@@ -570,7 +528,7 @@ class CrmLeadSpreadsheet(models.Model):
             sheet_part = sheet_part.strip("'")
             clean = f"'{sheet_part}'!{range_part}"
 
-        
+        _logger.info(f"   👉 Final Clean Range for Odoo = {clean}")
         return {'type': 'range', 'range': clean, 'style': 'arrow'}
 
 
@@ -586,19 +544,11 @@ class CrmLeadSpreadsheet(models.Model):
         original_sheet_name = original_sheet_name_raw.lower()
 
         # 🔥 Detect reference sheets (No row offset for helper, resin, profile master etc.)
-        # EXCEPTION: Moulding and Grating sheets should ALWAYS have offset
-        # should_have_offset = False
-        # if "moulding" in original_sheet_name or "grating" in original_sheet_name:
-        #      should_have_offset = True
-        
-        # reference_keywords = ["helper", "resin", "profile", "profile master", "master"]
-        # is_reference = any(k in original_sheet_name for k in reference_keywords)
-
-        if sheet_json.get('_is_aux'):
+        reference_keywords = ["helper", "resin", "profile", "profile master", "master"]
+        if any(k in original_sheet_name for k in reference_keywords):
             row_offset = 0
             col_offset = 0
         else:
-            # ✅ Start merging from Row 6 (Index 5)
             row_offset = 4
             col_offset = 0
 
@@ -636,11 +586,11 @@ class CrmLeadSpreadsheet(models.Model):
             })
 
         # -----------------------------------------
-        # Build dropdown validation map (Excel → Odoo conversion)
+        # 🔥 STEP 1: Build dropdown validation map (Excel → Odoo conversion)
         # -----------------------------------------
         cell_validations = {}
         if 'validations' in sheet_json:
-            _logger.info(f"🔍 [_get_sheet_populate_commands] Found {len(sheet_json['validations'])} validations in sheet")
+            _logger.info(f"🔍 Found {len(sheet_json['validations'])} validation rules in template")
             for val in sheet_json['validations']:
                 for rng in val.get('ranges', []):
                     try:
@@ -648,32 +598,23 @@ class CrmLeadSpreadsheet(models.Model):
                         for r in range(min_row, max_row + 1):
                             for c in range(min_col, max_col + 1):
                                 cell_validations[(r - 1, c - 1)] = self._get_validation_rule(val, all_sheet_names)
-                    except:
-                        pass
-            _logger.info(f"   📋 Built {len(cell_validations)} cell validation mappings")
-        else:
-            _logger.warning(f"   ❌ No 'validations' key in sheet_json")
+                    except Exception as e:
+                        _logger.warning(f"⚠️ Failed to parse validation range {rng}: {e}")
+
+        _logger.info(f"📋 Total cells with validation: {len(cell_validations)}")
 
         # -----------------------------------------
-        # CELLS & FORMULAS
+        # 🔥 STEP 2: CELLS & FORMULAS (WITHOUT validation attached)
         # -----------------------------------------
-        # -----------------------------------------
-        # CELLS & FORMULAS
-        # -----------------------------------------
-        processed_cells = set()
-        
         for cell_ref, cell_data in sheet_json.get('cells', {}).items():
             col_l = "".join(filter(str.isalpha, cell_ref))
             row_n = int("".join(filter(str.isdigit, cell_ref))) - 1
             col_n = column_index_from_string(col_l) - 1
-            
-            processed_cells.add((row_n, col_n))
 
             content = str(cell_data.get('content', '')) if cell_data.get('content') else ''
 
             # 🔁 Relocate formulas to new shifted position
             if content.startswith('='):
-                original_formula = content
                 try:
                     origin = f"{col_l}{row_n + 1}"
                     dest_col_letter = get_column_letter(col_n + col_offset + 1)
@@ -681,62 +622,16 @@ class CrmLeadSpreadsheet(models.Model):
                     content = Translator(content, origin=origin).translate_formula(dest_ref)
                 except:
                     pass
-                
-                # 🔥 CRITICAL: Shift ABSOLUTE row references (like $B$4) by row_offset
-                # Translator doesn't shift absolute references, so we need to do it manually
-                # BUT: Don't shift relative references (like C3) - Translator already handled those
-                # AND: Don't shift cross-sheet references
-                if row_offset != 0:
-                    import re
-                    before_shift = content
-                    
-                    # First, protect cross-sheet references
-                    placeholders = {}
-                    placeholder_counter = [0]
-                    
-                    def protect_cross_sheet(match):
-                        placeholder = f"__PROTECTED_{placeholder_counter[0]}__"
-                        placeholders[placeholder] = match.group(0)
-                        placeholder_counter[0] += 1
-                        return placeholder
-                    
-                    cross_sheet_pattern = r"(?:'[^']+?'|[A-Za-z_][A-Za-z0-9_\s]*?)!(?:\$?[A-Z]+\$?\d+(?::\$?[A-Z]+\$?\d+)?)"
-                    content = re.sub(cross_sheet_pattern, protect_cross_sheet, content)
-                    
-                    # Now shift ONLY absolute row references (with $)
-                    def shift_absolute_row(match):
-                        col_abs = match.group(1)
-                        col = match.group(2)
-                        row_abs = match.group(3)
-                        row = int(match.group(4))
-                        
-                        # Only shift if row has $ (absolute)
-                        if row_abs == '$':
-                            new_row = row + row_offset
-                            return f"{col_abs}{col}{row_abs}{new_row}"
-                        else:
-                            # Relative reference - don't shift (Translator already did)
-                            return match.group(0)
-                    
-                    # Pattern: optional($) + Column + $ + Row (only matches absolute rows)
-                    pattern = r"(\$?)([A-Z]+)(\$?)(\d+)"
-                    content = re.sub(pattern, shift_absolute_row, content)
-                    
-                    # Restore cross-sheet references
-                    for placeholder, original in placeholders.items():
-                        content = content.replace(placeholder, original)
-                    
-                    if before_shift != content:
-                        _logger.info(f"      🔄 Shifted absolute refs: {before_shift[:70]} → {content[:70]}")
-                
                 content = self._fix_formula(content, original_sheet_name_raw, new_sheet_name, all_sheet_names, main_sheet_info)
 
+            # ✅ Create cell command WITHOUT validation (clean separation)
             cmd = {
-                'type': 'UPDATE_CELL', 'sheetId': sheet_id,
-                'col': col_n + col_offset, 'row': row_n + row_offset,
+                'type': 'UPDATE_CELL',
+                'sheetId': sheet_id,
+                'col': col_n + col_offset, 
+                'row': row_n + row_offset,
                 'content': content,
             }
-
             commands.append(cmd)
 
         # -----------------------------------------
@@ -745,7 +640,6 @@ class CrmLeadSpreadsheet(models.Model):
         _logger.info(f"🎯 Applying {len(cell_validations)} validations as separate commands...")
         
         validation_commands = []
-
         for (r, c), rule in cell_validations.items():
             target_col = c + col_offset
             target_row = r + row_offset
@@ -802,204 +696,10 @@ class CrmLeadSpreadsheet(models.Model):
         commands.extend(validation_commands)
         _logger.info(f"🎯 Added {len(validation_commands)} validation commands to dispatch queue")
 
-        return commands  
+        return commands
 
-    # ------------------------------------------------------------------
-    # EMPTY DATA (initial load)
-    # ------------------------------------------------------------------
-    def _empty_spreadsheet_data(self):
-        data = super()._empty_spreadsheet_data() or {}
-        data.setdefault('lists', {})
-        data['sheets'] = []
 
-        if not self.lead_id or not self.lead_id.material_line_ids:
-            return data
 
-        # 🔄 NEW: Collect all sheets first, then reorder
-        main_sheets = []
-        auxiliary_sheets = []
-        
-        for line in self.lead_id.material_line_ids:
-            sheet_id = f"sheet_{line.id}"
-            list_id = str(line.id)
-            product_name = (line.product_template_id.display_name or "Item")[:31]
-
-            columns = self._get_material_line_columns(line)
-
-            # Check for template
-            template_data = None
-            
-            # Force reload category to bypass cache
-            category = line.product_template_id.categ_id
-            category.invalidate_recordset(['spreadsheet_data'])
-            
-            if category.spreadsheet_data:
-                try:
-                    _logger.info(f"🔍 Loading template for category: {category.name}")
-                    template_data = json.loads(category.spreadsheet_data)
-                    if template_data and template_data.get('sheets'):
-                        t_sheet = template_data['sheets'][0]
-                        _logger.info(f"   � Template Sheet Keys: {list(t_sheet.keys())}")
-                        if 'validations' in t_sheet:
-                            _logger.info(f"   ✅ Template has {len(t_sheet['validations'])} validations")
-                        else:
-                            _logger.warning("   ❌ Template has NO 'validations' key")
-                except Exception as e:
-                    _logger.error(f"Failed to load template data: {e}")
-                    pass
-
-            if template_data and template_data.get('sheets'):
-                # Use template sheet
-                template_sheet = template_data['sheets'][0]
-                # We need to deep copy to avoid modifying the cached template
-                import copy
-                sheet_json = copy.deepcopy(template_sheet)
-                sheet_json['id'] = sheet_id
-                sheet_json['name'] = product_name
-                
-                # ✅ SANITIZE: Ensure all cell content is string AND remove invalid format
-                if 'cells' in sheet_json:
-                    for cell_key, cell_val in sheet_json['cells'].items():
-                        if 'content' in cell_val:
-                            cell_val['content'] = str(cell_val['content'])
-                        if 'format' in cell_val:
-                             # Remove format to prevent #ERROR if format ID is invalid in new sheet
-                            del cell_val['format']
-
-                # ✅ Add dataValidationRules from template validations
-                if 'validations' in sheet_json and not sheet_json.get('dataValidationRules'):
-                    _logger.info(f"🔍 [_empty_spreadsheet_data] Adding validations to MAIN sheet {sheet_json.get('name')}")
-                    sheet_json['dataValidationRules'] = []
-                    for val in sheet_json['validations']:
-                        for rng in val.get('ranges', []):
-                            try:
-                                from openpyxl.utils.cell import range_boundaries
-                                min_col, min_row, max_col, max_row = range_boundaries(rng)
-                                # Apply row offset of 4 for main sheet
-                                for r in range(min_row, max_row + 1):
-                                    for c in range(min_col, max_col + 1):
-                                        cell_ref = f"{get_column_letter(c)}{r + 4}"  # +4 for header offset
-                                        rule_data = self._get_validation_rule(val, [])
-                                        if rule_data:
-                                            validation_rule = {
-                                                'id': uuid.uuid4().hex,
-                                                'isBlocking': False,
-                                                'ranges': [cell_ref],
-                                            }
-                                            if rule_data.get('range'):
-                                                validation_rule['criterion'] = {
-                                                    'type': 'isValueInRange',
-                                                    'values': [rule_data['range']],
-                                                    'displayStyle': 'arrow'
-                                                }
-                                            elif rule_data.get('values'):
-                                                validation_rule['criterion'] = {
-                                                    'type': 'isValueInList',
-                                                    'values': rule_data['values'],
-                                                    'displayStyle': 'arrow'
-                                                }
-                                            if validation_rule.get('criterion'):
-                                                sheet_json['dataValidationRules'].append(validation_rule)
-                                                _logger.info(f"✅ [_empty_spreadsheet_data] Added validation to {cell_ref}: {rule_data.get('range') or rule_data.get('values')}")
-                            except Exception as e:
-                                _logger.warning(f"Failed to process validation for {rng}: {e}")
-
-                _logger.info(f"📋 Sheet {product_name}: validations={('validations' in sheet_json)}, dataValidationRules={len(sheet_json.get('dataValidationRules', []))}")
-                sheet_json['_is_aux'] = False 
-                main_sheets.append(sheet_json)
-
-                # 2. Auxiliary Sheets (Index 1+) - Collect for sorting
-                if len(template_data['sheets']) > 1:
-                    for aux_sheet in template_data['sheets'][1:]:
-                        # Check if sheet with this ID already exists
-                        existing_ids = {s.get('id') for s in auxiliary_sheets}
-                        if aux_sheet.get('id') not in existing_ids:
-                            aux_copy = copy.deepcopy(aux_sheet)
-                            # Sanitize
-                            if 'cells' in aux_copy:
-                                for cell_key, cell_val in aux_copy['cells'].items():
-                                    if 'content' in cell_val:
-                                        cell_val['content'] = str(cell_val['content']) if cell_val['content'] is not None else ""
-                                    if 'format' in cell_val:
-                                        del cell_val['format']
-                            
-                            # ✅ Add dataValidationRules from template validations
-                            
-                            # ✅ Add dataValidationRules from template validations
-                            if 'validations' in aux_copy and not aux_copy.get('dataValidationRules'):
-                                aux_copy['dataValidationRules'] = []
-                                for val in aux_copy['validations']:
-                                    for rng in val.get('ranges', []):
-                                        try:
-                                            from openpyxl.utils.cell import range_boundaries
-                                            min_col, min_row, max_col, max_row = range_boundaries(rng)
-                                            for r in range(min_row, max_row + 1):
-                                                for c in range(min_col, max_col + 1):
-                                                    cell_ref = f"{get_column_letter(c)}{r}"
-                                                    rule_data = self._get_validation_rule(val, [])
-                                                    if rule_data:
-                                                        validation_rule = {
-                                                            'id': uuid.uuid4().hex,
-                                                            'isBlocking': False,
-                                                            'ranges': [cell_ref],
-                                                        }
-                                                        if rule_data.get('range'):
-                                                            validation_rule['criterion'] = {
-                                                                'type': 'isValueInRange',
-                                                                'values': [rule_data['range']],
-                                                                'displayStyle': 'arrow'
-                                                            }
-                                                        elif rule_data.get('values'):
-                                                            validation_rule['criterion'] = {
-                                                                'type': 'isValueInList',
-                                                                'values': rule_data['values'],
-                                                                'displayStyle': 'arrow'
-                                                            }
-                                                        if validation_rule.get('criterion'):
-                                                            aux_copy['dataValidationRules'].append(validation_rule)
-                                                            _logger.info(f"✅ Added validation to AUX sheet {aux_copy.get('name')}: {cell_ref} -> {rule_data.get('range')}")
-                                        except Exception as e:
-                                                            _logger.warning(f"Failed to process validation for {rng}: {e}")
-                            aux_copy['_is_aux'] = True 
-                            auxiliary_sheets.append(aux_copy)
-            else:
-                # Default empty sheet
-                main_sheets.append({'id': sheet_id, 'name': product_name})
-
-            data['lists'][list_id] = {
-                'id': list_id,
-                'model': 'crm.material.line',
-                'columns': columns,
-                'domain': [['id', '=', line.id]],
-                'sheetId': sheet_id,
-                'name': product_name,
-                'context': {},
-                'orderBy': [],
-                'fieldMatching': {
-                    'material_line_ids': {'chain': 'lead_id', 'type': 'many2one'},
-                },
-            }
-        # 🎯 SORT auxiliary sheets: Profile Master → Resin → Helper
-        # 🎯 SORT auxiliary sheets: Profile Master → Resin → Helper
-        def sheet_order(s):
-            name = (s.get('name') or "").lower()
-            if "merged sheet" in name or "costing" in name:
-                return 0
-            if "profile master" in name or "profile" in name:
-                return 1
-            if "resin" in name:
-                return 2
-            if "helper" in name:
-                return 3
-            return 99
-
-        auxiliary_sheets.sort(key=sheet_order)
-
-        # ✅ Append in correct order: Main sheets first, then sorted auxiliaries
-        data['sheets'].extend(main_sheets)
-        data['sheets'].extend(auxiliary_sheets)
-
-        return data
 
     # ------------------------------------------------------------------
     # INSERT REVISION (create new sheet on new line)
@@ -1022,7 +722,7 @@ class CrmLeadSpreadsheet(models.Model):
 
         columns = self._get_material_line_columns(line)
 
-        
+        _logger.info(f"🔧 Creating sheet for line {line_id} with columns: {columns}")
 
         # Build column metadata with proper types
         columns_meta = []
@@ -1036,7 +736,7 @@ class CrmLeadSpreadsheet(models.Model):
 
         # Get actual data now
         attrs = line.attributes_json or {}
-        
+        _logger.info(f"📦 Line {line_id} attributes_json: {attrs}")
 
         # Build the actual row data that will be inserted
         row_data = []
@@ -1055,20 +755,17 @@ class CrmLeadSpreadsheet(models.Model):
                 cell_value = attrs.get(field_name, '')
 
             row_data.append(cell_value)
-            
+            _logger.info(f"  📝 {field_name} = {cell_value}")
 
 
 
         # Always create sheet and insert list first (Default behavior)
         # ✅ FORCE position 0 to ensure Main sheet is always first (before Aux sheets)
-        raw = json.loads(self.raw_spreadsheet_data) if self.raw_spreadsheet_data else {}
-        existing_sheets = raw.get("sheets", [])
-        pos = sum(1 for s in existing_sheets if str(s.get("id", "")).startswith("sheet_"))
         commands.append({
             'type': 'CREATE_SHEET', 
             'sheetId': sheet_id, 
             'name': product_name,
-            'position': pos
+            'position': 0 
         })
         
         commands.append({
@@ -1140,26 +837,42 @@ class CrmLeadSpreadsheet(models.Model):
 
         # Check for template and append if exists
         template_data = None
-        category = line.product_template_id.categ_id
-        _logger.info(f"🔍 [_dispatch_insert_list_revision] Category: {category.name}, Has data: {bool(category.spreadsheet_data)}")
-        
-        if category.spreadsheet_data:
+        if line.product_template_id.categ_id.spreadsheet_data:
             try:
-                template_data = json.loads(category.spreadsheet_data)
-                if template_data and template_data.get('sheets'):
-                    main_sheet = template_data['sheets'][0]
-                    _logger.info(f"   📋 Main sheet keys: {list(main_sheet.keys())}")
-                    if 'validations' in main_sheet:
-                        _logger.info(f"   ✅ Main sheet has {len(main_sheet['validations'])} validations")
-                    else:
-                        _logger.warning(f"   ❌ Main sheet has NO validations key")
-            except Exception as e:
-                _logger.error(f"   ❌ Failed to parse template: {e}")
+                template_data = json.loads(line.product_template_id.categ_id.spreadsheet_data)
+            except Exception:
                 pass
 
         if template_data and template_data.get('sheets'):
+            _logger.info(f"📄 Merging template for line {line_id}")
+            
             # Collect all sheet names for dynamic reference fixing
             all_sheet_names = [s.get('name') for s in template_data.get('sheets', [])]
+
+            # 1. Main Sheet (Index 0) - Apply to sheet_id with offset
+            main_sheet = template_data['sheets'][0]
+            main_sheet_name = main_sheet.get('name')
+            main_sheet_info = {
+                'name': main_sheet_name, 
+                'new_name': product_name,  # ✅ New name after merge
+                'offset': 4
+            }
+
+            # Pass new_sheet_name=product_name to fix self-references
+            template_cmds = self._get_sheet_populate_commands(
+                main_sheet, 
+                sheet_id, 
+                row_offset=4, 
+                new_sheet_name=product_name,
+                all_sheet_names=all_sheet_names,
+                main_sheet_info=main_sheet_info
+            )
+            commands.extend(template_cmds)
+
+            # 2. Auxiliary Sheets (Index 1+)
+            # We need to check if they exist in the spreadsheet already
+            current_data = json.loads(self.raw_spreadsheet_data) if self.raw_spreadsheet_data else {}
+            current_sheet_ids = {s.get('id') for s in current_data.get('sheets', [])}
 
             # 🎯 SORT auxiliary sheets: Profile Master → Resin → Helper → Others
             # This ensures correct tab order when spreadsheet opens
@@ -1167,8 +880,6 @@ class CrmLeadSpreadsheet(models.Model):
             
             def sheet_order(s):
                 name = (s.get('name') or "").lower()
-                if "merged sheet" in name or "costing" in name:
-                    return 0
                 if "profile master" in name or "profile" in name:
                     return 1
                 if "resin" in name:
@@ -1179,31 +890,8 @@ class CrmLeadSpreadsheet(models.Model):
 
             aux_sheets.sort(key=sheet_order)
 
-            # ---------------------------------------------------------
-            # PREPARE: Main Sheet Info (Needed for Aux sheets too)
-            # ---------------------------------------------------------
-            main_sheet = template_data['sheets'][0]
-            main_sheet_name = main_sheet.get('name')
-            main_sheet_info = {
-                'name': main_sheet_name, 
-                'new_name': product_name,  # ✅ New name after merge
-                'offset': 4
-            }
-
-            # ---------------------------------------------------------
-            # PHASE 1: Create Auxiliary Sheets FIRST
-            # (Ensures cross-sheet validations work when Main Sheet is populated)
-            # ---------------------------------------------------------
-            aux_create_cmds = []
-            aux_populate_cmds = []
-            
-            current_data = json.loads(self.raw_spreadsheet_data) if self.raw_spreadsheet_data else {}
-            current_sheet_ids = {s.get('id') for s in current_data.get('sheets', [])}
-            # pos = sum(1 for s in current_sheet_ids if s.get("id", "").startswith("sheet_"))
-
             for idx, aux_sheet in enumerate(aux_sheets, start=1):
                 aux_id = aux_sheet.get('id')
-                aux_sheet['_is_aux'] = True
                 
                 # Check if already exists in current data OR in pending revisions
                 is_duplicate = False
@@ -1220,18 +908,20 @@ class CrmLeadSpreadsheet(models.Model):
                         is_duplicate = True
 
                 if aux_id and not is_duplicate:
-                    # 1. Create Command
-                    aux_create_cmds.append({
+                    _logger.info(f"📄 Adding auxiliary sheet {aux_id} ({aux_sheet.get('name')})")
+                    
+                    # Create sheet with explicit position
+                    commands.append({
                         'type': 'CREATE_SHEET', 
                         'sheetId': aux_id, 
                         'name': aux_sheet.get('name', 'Sheet')[:31],
                         'position': idx  # ✅ Force position 1, 2, 3...
                     })
                     
-                    # 2. Populate Command (Stored for later)
+                    # Populate (No offset for reference sheets)
                     # Auxiliary sheets (Helper, Resin, Profile Master) are reference sheets
                     # They should NOT have row offset applied
-                    p_cmds = self._get_sheet_populate_commands(
+                    aux_cmds = self._get_sheet_populate_commands(
                         aux_sheet, 
                         aux_id, 
                         row_offset=0,  # ✅ Changed from 4 to 0
@@ -1239,142 +929,16 @@ class CrmLeadSpreadsheet(models.Model):
                         all_sheet_names=all_sheet_names,
                         main_sheet_info=main_sheet_info
                     )
-                    aux_populate_cmds.extend(p_cmds)
+                    commands.extend(aux_cmds)
                     
-                    # ✅ ADD VALIDATION RULES to auxiliary sheet
-                    if 'validations' in aux_sheet:
-                        _logger.info(f"🔍 Adding {len(aux_sheet['validations'])} validation rules to AUX sheet {aux_sheet.get('name')}")
-                        for val in aux_sheet['validations']:
-                            for rng in val.get('ranges', []):
-                                try:
-                                    from openpyxl.utils.cell import range_boundaries
-                                    min_col, min_row, max_col, max_row = range_boundaries(rng)
-                                    for r in range(min_row, max_row + 1):
-                                        for c in range(min_col, max_col + 1):
-                                            cell_ref = f"{get_column_letter(c)}{r}"
-                                            rule_data = self._get_validation_rule(val, [])
-                                            if rule_data and rule_data.get('range'):
-                                                # Create UPDATE_CELL command with dataValidation
-                                                validation_cmd = {
-                                                    'type': 'UPDATE_CELL',
-                                                    'sheetId': aux_id,
-                                                    'col': c - 1,
-                                                    'row': r - 1,
-                                                    'dataValidation': {
-                                                        'id': uuid.uuid4().hex,
-                                                        'criterion': {
-                                                            'type': 'isValueInRange',
-                                                            'values': [rule_data['range']],
-                                                            'displayStyle': 'arrow'
-                                                        },
-                                                        'ranges': [cell_ref]
-                                                    }
-                                                }
-                                                aux_populate_cmds.append(validation_cmd)
-                                                _logger.info(f"✅ Added dropdown to AUX {aux_sheet.get('name')} at {cell_ref}: {rule_data['range']}")
-                                except Exception as e:
-                                    _logger.warning(f"Failed to add validation for {rng}: {e}")
-                    
-                    # Mark as added to avoid duplicates
+                    # Mark as added to avoid duplicates in this very loop (though unlikely)
                     current_sheet_ids.add(aux_id)
-
-            # ✅ Execute Creation Commands FIRST
-            commands.extend(aux_create_cmds)
-
-            # ---------------------------------------------------------
-            # PHASE 2: Populate Auxiliary Sheets
-            # (Populate these FIRST so data exists for Main Sheet validations)
-            # ---------------------------------------------------------
-            commands.extend(aux_populate_cmds)
-
-            # ---------------------------------------------------------
-            # PHASE 3: Populate Main Sheet
-            # ---------------------------------------------------------
-            # Pass new_sheet_name=product_name to fix self-references
-            template_cmds = self._get_sheet_populate_commands(
-                main_sheet, 
-                sheet_id, 
-                row_offset=4, 
-                new_sheet_name=product_name,
-                all_sheet_names=all_sheet_names,
-                main_sheet_info=main_sheet_info
-            )
-            commands.extend(template_cmds)
-            
 
         # Final update command
         commands.append({'type': 'UPDATE_ODOO_LIST_DATA', 'listId': list_id})
 
-        # Dispatch all commands
+        _logger.info(f"📤 Dispatching {len(commands)} commands for sheet {sheet_id}")
         self._dispatch_commands(commands)
-        
-        # 🔥 CRITICAL FIX: Directly add dataValidationRules to raw_spreadsheet_data
-        # Commands alone don't persist validations - we must update the stored JSON
-        # IMPORTANT: Reload data AFTER dispatch to get the latest state
-        _logger.info(f"🔍 [DIRECT UPDATE] Checking if we should add validations directly...")
-        _logger.info(f"   template_data exists: {bool(template_data)}")
-        if template_data:
-            _logger.info(f"   template_data has sheets: {bool(template_data.get('sheets'))}")
-        
-        if template_data and template_data.get('sheets'):
-            main_sheet = template_data['sheets'][0]
-            _logger.info(f"   main_sheet has validations: {'validations' in main_sheet}")
-            
-            if 'validations' in main_sheet:
-                try:
-                    # Reload data to get the state AFTER commands were processed
-                    self.invalidate_recordset(['raw_spreadsheet_data'])
-                    data = json.loads(self.raw_spreadsheet_data) if self.raw_spreadsheet_data else {}
-                    sheets = data.get('sheets', [])
-                    _logger.info(f"   Current spreadsheet has {len(sheets)} sheets (after reload)")
-                    
-                    # Find the sheet we just created
-                    target_sheet = None
-                    for sheet in sheets:
-                        if sheet.get('id') == sheet_id:
-                            target_sheet = sheet
-                            break
-                    
-                    if target_sheet:
-                        _logger.info(f"   ✅ Found target sheet: {sheet_id}")
-                        if 'dataValidationRules' not in target_sheet:
-                            target_sheet['dataValidationRules'] = []
-                        
-                        # Add validation rules with proper row offset
-                        for val in main_sheet['validations']:
-                            for rng in val.get('ranges', []):
-                                try:
-                                    from openpyxl.utils.cell import range_boundaries
-                                    min_col, min_row, max_col, max_row = range_boundaries(rng)
-                                    for r in range(min_row, max_row + 1):
-                                        for c in range(min_col, max_col + 1):
-                                            # Apply row offset of 4
-                                            cell_ref = f"{get_column_letter(c)}{r + 4}"
-                                            rule_data = self._get_validation_rule(val, all_sheet_names)
-                                            
-                                            if rule_data and rule_data.get('range'):
-                                                validation_rule = {
-                                                    'id': uuid.uuid4().hex,
-                                                    'criterion': {
-                                                        'type': 'isValueInRange',
-                                                        'values': [rule_data['range']],
-                                                    },
-                                                    'ranges': [cell_ref],
-                                                    'isBlocking': False
-                                                }
-                                                target_sheet['dataValidationRules'].append(validation_rule)
-                                                _logger.info(f"   ✅ [DIRECT] Added validation rule to {cell_ref}")
-                                except Exception as e:
-                                    _logger.warning(f"Failed to add validation for {rng}: {e}")
-                        
-                        # Save updated data
-                        self.raw_spreadsheet_data = json.dumps(data)
-                        _logger.info(f"   💾 Saved {len(target_sheet.get('dataValidationRules', []))} validation rules to raw_spreadsheet_data")
-                    else:
-                        _logger.warning(f"   ❌ Could not find sheet {sheet_id} in raw_spreadsheet_data")
-                        _logger.info(f"   Available sheet IDs: {[s.get('id') for s in sheets]}")
-                except Exception as e:
-                    _logger.error(f"Failed to update raw_spreadsheet_data with validations: {e}", exc_info=True)
 
     # ------------------------------------------------------------------
     # SYNC WITH MATERIAL LINES
@@ -1480,7 +1044,7 @@ class CrmLeadSpreadsheet(models.Model):
 
         try:
             self._dispatch_commands(commands)
-        except:
+        except Exception:
             self._cleanup_deleted_sheets_from_data(material_line_id)
 
     def _cleanup_deleted_sheets_from_data(self, material_line_id):
@@ -1490,11 +1054,13 @@ class CrmLeadSpreadsheet(models.Model):
             data = json.loads(self.raw_spreadsheet_data)
             sid = f"sheet_{material_line_id}"
             if 'sheets' in data:
-                data['sheets'] = [s for s in data['sheets'] if s.get('id') != sid]
+                data['sheets'] = [
+                    s for s in data['sheets'] if s.get('id') != sid
+                ]
             if 'lists' in data and str(material_line_id) in data['lists']:
                 del data['lists'][str(material_line_id)]
             self.raw_spreadsheet_data = json.dumps(data)
-        except:
+        except Exception:
             pass
 
     # ------------------------------------------------------------------
@@ -1510,7 +1076,7 @@ class CrmLeadSpreadsheet(models.Model):
                 'type': 'success',
                 'message': _('Sheets synced with CRM Material Lines'),
                 'next': {'type': 'ir.actions.act_window_close'},
-            }
+            },
         }
 
     # ------------------------------------------------------------------
@@ -1536,10 +1102,10 @@ class CrmLeadSpreadsheet(models.Model):
 
         rows = []
         for line in self.lead_id.material_line_ids:
-
             row = {
                 'id': line.id,
-                'name': line.product_template_id.display_name if line.product_template_id else '',
+                'name': line.product_template_id.display_name
+                if line.product_template_id else '',
                 'quantity': line.quantity,
             }
 

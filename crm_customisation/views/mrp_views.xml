@@ -11,6 +11,8 @@
 
                 <field name="ask_for_delivery_date"/>
                 <field name="delivery_date" invisible = "ask_for_delivery_date  == False"/>
+                <field name="attached_file_name" invisible="1"/>
+                <field name="attached_file_id" widget="binary" filename="attached_file_name" string="📎 File"/>
         </xpath>
         
      

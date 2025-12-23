@@ -4,13 +4,18 @@ import json
 import openpyxl
 import base64
 from io import BytesIO
+import logging
 from openpyxl.utils import get_column_letter, column_index_from_string
+_logger = logging.getLogger(__name__)
+
 
 class ProductCategory(models.Model):
     _inherit = "product.category"
     
     template_file = fields.Binary(string="Upload Calculation Template")
     template_filename = fields.Char(string="Template Filename")
+    google_sheet_url = fields.Char(string="Google Sheet System URL", help="Paste the full URL of the Google Sheet here.")
+
     
     spreadsheet_data = fields.Text(
         string="Spreadsheet Data",
@@ -42,7 +47,76 @@ class ProductCategory(models.Model):
                 category.spreadsheet_data = False
             
             print("========================================================\n")
-    
+    def action_sync_google_sheet(self):
+        """
+        Fetches the XLSX directly from Google Drive URL and saves it to template_file.
+        This triggers the existing _compute_spreadsheet_data logic.
+        """
+        self.ensure_one()
+        if not self.google_sheet_url:
+            return
+            
+        try:
+            import requests
+            from odoo.exceptions import UserError
+            
+            # 1. Parse URL to get Sheet ID
+            # Formats: 
+            # https://docs.google.com/spreadsheets/d/SPREADSHEET_ID/edit...
+            # https://docs.google.com/spreadsheets/d/e/PUBLISHED_ID/pubhtml...
+            
+            sheet_id = False
+            # Regex to capture ID between /d/ and /
+            import re
+            match = re.search(r'/d/([a-zA-Z0-9-_]+)', self.google_sheet_url)
+            if match:
+                sheet_id = match.group(1)
+            
+            if not sheet_id:
+                raise UserError("Could not extract Spreadsheet ID. Please verify the URL format (should contain /d/spreadsheet_id/).")
+                
+            # 2. Construct Export URL
+            export_url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=xlsx"
+            
+            _logger.info(f"Attempting to download Google Sheet from: {export_url}")
+            
+            # 3. Fetch Data
+            response = requests.get(export_url, timeout=30)
+            
+            if response.status_code == 200:
+                # 4. Save to binary field (this triggers the compute method)
+                self.template_file = base64.b64encode(response.content)
+                self.template_filename = "GoogleSheet_Synced.xlsx"
+                
+                # Retrieve the sheet name if possible
+                if 'Content-Disposition' in response.headers:
+                    fname = re.findall('filename="(.+)"', response.headers['Content-Disposition'])
+                    if fname:
+                        self.template_filename = fname[0]
+                
+                self._compute_spreadsheet_data()
+                
+                return {
+                    'type': 'ir.actions.client',
+                    'tag': 'display_notification',
+                    'params': {
+                        'title': 'Success',
+                        'message': 'Google Sheet synced successfully!',
+                        'type': 'success',
+                        'sticky': False,
+                        'next': {'type': 'ir.actions.act_window_close'},
+                    }
+                }
+            elif response.status_code == 401:
+                raise UserError("Permission Denied (401).\n\nReason: The Google Sheet is Private.\n\nSolution:\n1. Open Google Sheet.\n2. Click 'Share' (top right).\n3. Under 'General access', select 'Anyone with the link'.\n4. Try 'Sync Now' again.")
+            else:
+                raise UserError(f"Failed to download. Status Code: {response.status_code}\nURL: {export_url}")
+
+                
+        except Exception as e:
+            _logger.error(f"Google Sync Failed: {e}")
+            raise e
+        
 
     def _parse_merge_range(self, range_str):
         """
@@ -175,31 +249,15 @@ class ProductCategory(models.Model):
                         # key as A1 etc. Odoo expects A1-style keys inside cells dict
                         col_letter = get_column_letter(c)
                         key = f"{col_letter}{r}"
-                        
-                        # Handle ArrayFormula objects (can appear in any cell type)
-                        from openpyxl.worksheet.formula import ArrayFormula
-                        if isinstance(cell.value, ArrayFormula):
-                            # Extract formula text from ArrayFormula object
-                            raw = cell.value.text if hasattr(cell.value, 'text') else ""
-                            if raw:
-                                content = raw if raw.startswith('=') else '=' + raw
-                            else:
-                                # Empty array formula - skip
-                                continue
+
                         # decide content: formula vs value
-                        elif cell.data_type == 'f':
-                            # Regular formula
+                        if cell.data_type == 'f':
+                            # openpyxl may return formula string without '='
                             raw = str(cell.value) if cell.value is not None else ""
-                            # Skip formulas with __xludf (Excel dynamic array placeholders)
-                            if '__xludf' in raw or '__xlud' in raw:
-                                continue
                             content = raw if raw.startswith('=') else '=' + raw
                         else:
                             # preserve native python types for numbers/bool
                             v = cell.value
-                            # Skip error values
-                            if isinstance(v, str) and v.startswith('#'):
-                                continue
                             # openpyxl may return datetime objects for dates — keep them as isoformat strings
                             try:
                                 import datetime
@@ -208,7 +266,11 @@ class ProductCategory(models.Model):
                                 else:
                                     content = v
                             except Exception:
+                                    content = str(v)
+                            except Exception:
                                 content = str(v)
+
+                        # minimal format hint: 1 = default/text (we keep it simple)
                         sheet_json["cells"][key] = {
                             "content": str(content) if content is not None else "",
                         }
@@ -232,9 +294,6 @@ class ProductCategory(models.Model):
                                     'showErrorMessage': dv.showErrorMessage,
                                     'showInputMessage': dv.showInputMessage,
                                 })
-                                print(f"DEBUG: Found validation in {sheet.title} | Type: {dv.type} | Formula: {dv.formula1} | Ranges: {ranges}")
-                            else:
-                                print(f"DEBUG: Ignored validation type: {dv.type} in {sheet.title}")
                 except Exception as e:
                     print("DEBUG: reading data_validations failed for sheet", sheet.title, "error:", e)
 

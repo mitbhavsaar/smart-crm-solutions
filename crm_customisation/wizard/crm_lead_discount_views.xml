@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <record id="crm_lead_discount_view_form" model="ir.ui.view">
+        <field name="name">crm.lead.discount.form</field>
+        <field name="model">crm.lead.discount</field>
+        <field name="arch" type="xml">
+            <form string="Discount">
+                <sheet>
+                    <div class="row">
+                        <div class="col-sm-5 col-md-4 col-lg-4 col-4">
+                            <group>
+                                <field name="discount_percentage"
+                                       invisible="discount_type not in ('so_discount', 'sol_discount')"
+                                       widget="percentage" nolabel="1"/>
+                                <field name="discount_amount"
+                                       invisible="discount_type != 'amount'"
+                                       nolabel="1"/>
+                            </group>
+                        </div>
+                        <div class="col-sm-7 col-md-8 col-lg-8 col-8">
+                            <field name="discount_type" widget="radio"/>
+                        </div>
+                    </div>
+                </sheet>
+                <footer>
+                    <button type="object" string="Apply" name="action_apply_discount" class="btn btn-primary" data-hotkey="q"/>
+                    <button special="cancel" string="Discard" class="btn btn-secondary" data-hotkey="x"/>
+                </footer>
+            </form>
+        </field>
+    </record>
+</odoo>

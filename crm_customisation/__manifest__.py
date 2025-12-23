@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
 {
-    'name': 'CRM Customisation',
+    'name': 'CRM Advanced Solution',
     'version': '18.0.1.0.10',
-    'summary': 'Auto sequence for CRM Opportunities',
+    'summary': 'Advanced material tracking with seamless sales integration, intelligent spreadsheets, and automated manufacturing reminders.',
     'description': '''
        Default List View.
        Additional Contacts Tab.
@@ -15,9 +15,11 @@
     'website': 'https://www.entrivistech.com',
     'depends': [
         'base','crm','sale_management','product','mail','stock','mrp'],
+    
     'images': ['/static/description/icon.png'],
     'data': [
         "security/ir.model.access.csv",
+        "wizard/crm_lead_discount_views.xml",
         "security/ecpl_security.xml",
         "data/ir_sequence_data.xml",
         "data/reminder_email_cron.xml",
@@ -30,7 +32,7 @@
         "views/product_template_view.xml",
         "views/mrp_views.xml",
         "views/sale_views.xml",
-        # "views/delivery_date_portal_template.xml",     
+        # "views/delivery_date_portal_template.xml",   
     ],
     'external_dependencies': {
         'python': ['openpyxl'],

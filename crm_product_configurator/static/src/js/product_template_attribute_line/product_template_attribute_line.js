@@ -235,7 +235,7 @@ export class ProductTemplateAttributeLine extends Component {
     // -----------------------------
     validateNumeric(event) {
         const value = event.target.value;
-        const isValid = /^[0-9]*$/.test(value);
+        const isValid = /^[0-9]*\.?[0-9]*$/.test(value);
 
         if (!isValid) {
             this.numericWarning = "Numeric Values Only !";
@@ -243,8 +243,8 @@ export class ProductTemplateAttributeLine extends Component {
             this.numericWarning = "";
         }
 
-        // restrict input visually
-        event.target.value = value.replace(/[^0-9]/g, "");
+        // restrict input visually - allow digits and decimal point
+        event.target.value = value.replace(/[^0-9.]/g, "");
 
         // save the cleaned numeric value
         this.updateCustomValue(event);

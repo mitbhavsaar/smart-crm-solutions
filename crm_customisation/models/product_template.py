@@ -1,7 +1,6 @@
 from odoo import models,fields,api
 import json
 import openpyxl
-import re
 
 
 import logging
@@ -10,13 +9,34 @@ _logger = logging.getLogger(__name__)
 class ProductTemplate(models.Model):
     _inherit = "product.template"
 
-
-
+    raisin_type_id = fields.Many2one(
+        'raisin.type',
+        string="Raisin Type",
+        required=True
+    )
+    is_raisin_category = fields.Boolean(
+        string="Is Raisin Category",
+        compute="_compute_is_raisin_category",
+        store=True
+    )
+    @api.depends('categ_id.is_raisin')
+    def _compute_is_raisin_category(self):
+        for rec in self:
+            rec.is_raisin_category = rec.categ_id.is_raisin
+            
+    @api.onchange('categ_id')
+    def _onchange_categ_id(self):
+        if self.categ_id and self.categ_id.is_raisin:
+            if not self.raisin_type_id:
+                self.raisin_type_id = self.categ_id.raisin_type_id
+        elif not self._origin or self.raisin_type_id:
+            self.raisin_type_id = False
 
 class ProductCategory(models.Model):
     _inherit = "product.category"
     
-
+    is_raisin = fields.Boolean(string="Is Raisin")
+    raisin_type_id = fields.Many2one("raisin.type", string="Default Raisin Type")
     
     # Direct file upload field
     template_file = fields.Binary(

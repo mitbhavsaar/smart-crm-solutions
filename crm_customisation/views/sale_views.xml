@@ -10,6 +10,10 @@
             <field name="ask_for_delivery_date"/>
             <field name="delivery_date" invisible = "ask_for_delivery_date  == False"/>
           </xpath>
+          <xpath expr="//field[@name='order_line']/list/field[@name='name']" position="after">
+              <field name="attached_file_name" invisible="1"/>
+              <field name="attached_file_id" widget="binary" filename="attached_file_name" string="📎 File" optional="show"/>
+          </xpath>
           <!-- Add Cost Calculator button to button box -->
           <xpath expr="//div[@name='button_box']" position="inside">
               <button class="oe_stat_button"

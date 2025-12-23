@@ -34,26 +34,63 @@ class CrmLead(models.Model):
         readonly=True,
         store=False,
     )
-    
+
     all_lines_priced = fields.Boolean(
         string="All Lines Priced",
-        compute='_compute_all_lines_priced',
-        store=True,
-        help="True if all material lines have price greater than 0.0"
+        compute="_compute_all_lines_priced",
+        help="Checks if all material lines have a price > 0"
     )
 
-    @api.depends('material_line_ids', 'material_line_ids.price')
+    currency_id = fields.Many2one(
+        'res.currency',
+        related='company_id.currency_id',
+        store=True,
+        readonly=True
+    )
+
+    amount_untaxed = fields.Monetary(
+        string="Untaxed Amount",
+        compute="_compute_amounts",
+        store=True,
+        currency_field='currency_id'
+    )
+
+    amount_total = fields.Monetary(
+        string="Total",
+        compute="_compute_amounts",
+        store=True,
+        currency_field='currency_id'
+    )
+
+    @api.depends('material_line_ids.price')
     def _compute_all_lines_priced(self):
-        """Compute if all material lines have price > 0.0"""
         for lead in self:
             if not lead.material_line_ids:
-                # No lines means button should be hidden
                 lead.all_lines_priced = False
-            else:
-                # Check if all lines have price > 0.0
-                lead.all_lines_priced = all(
-                    line.price > 0.0 for line in lead.material_line_ids
-                )
+                continue
+            # Check if all lines have a price set
+            lead.all_lines_priced = all(line.price > 0 for line in lead.material_line_ids)
+
+    @api.depends('material_line_ids.price_subtotal', 'material_line_ids.total_price')
+    def _compute_amounts(self):
+        for lead in self:
+            amount_untaxed = sum(lead.material_line_ids.mapped('price_subtotal'))
+            amount_total = sum(lead.material_line_ids.mapped('total_price'))
+            lead.amount_untaxed = amount_untaxed
+            lead.amount_total = amount_total
+
+
+
+    def action_open_discount_wizard(self):
+        self.ensure_one()
+        return {
+            'name': _('Apply Discount'),
+            'type': 'ir.actions.act_window',
+            'res_model': 'crm.lead.discount',
+            'view_mode': 'form',
+            'target': 'new',
+            'context': {'default_lead_id': self.id},
+        }
 
     def action_new_quotation(self):
         """Create quotation with spreadsheet data transfer"""
@@ -66,12 +103,11 @@ class CrmLead(models.Model):
                 line_vals = {
                     'product_id': line.product_id.id,
                     'product_uom_qty': line.quantity or 1.0,
-                    'width': line.width or 0,
-                    'thickness': line.thickness or 0,
-                    'height': line.height or 0,
-                    'length': line.length or 0,
+                    'product_uom': line.product_uom_id.id if line.product_uom_id else False,
+                    'discount': line.discount or 0.0,
+                    'tax_id': line.tax_id or False,
                     'price_unit': line.price,
-                    'name': line.product_id.name or "Product",
+                    'name': line.description or line.product_id.name or "Product",
                 }
                 order_lines.append((0, 0, line_vals))
         
@@ -129,7 +165,9 @@ class CrmLead(models.Model):
                 'length': 'length',
                 'thickness': 'thickness',
                 'raw_material': 'raw_material',
-
+                'raisin_type_id': 'raisin_type_id',
+                'discount': 'discount',
+                'tax_id': 'tax_id',
             }
             
             #  Transform ALL lists from CRM
@@ -393,14 +431,19 @@ class CrmLead(models.Model):
                     'order_id': sale_order.id,
                     'product_id': mat_line.product_id.id,
                     'product_uom_qty': mat_line.quantity or 1.0,
+                    'product_uom': mat_line.product_uom_id.id if mat_line.product_uom_id else False,
                     'price_unit': mat_line.price or mat_line.product_id.list_price,
+                    'discount': mat_line.discount or 0.0,
+                    'tax_id': [(6, 0, mat_line.tax_id.ids)] if mat_line.tax_id else False,
                     'width': mat_line.width or 0,
                     'height': mat_line.height or 0,
                     'length': mat_line.length or 0,
                     'thickness': mat_line.thickness or 0,
                     'raw_material': mat_line.raw_material or '',
-
-                    'name': mat_line.product_id.name or "Product",
+                    'raisin_type_id': mat_line.raisin_type_id.id if mat_line.raisin_type_id else False,
+                    'attached_file_id': mat_line.attached_file_id,
+                    'attached_file_name': mat_line.attached_file_name,
+                    'name': mat_line.description or mat_line.product_id.name or "Product",
                 })
                 mapping[mat_line.id] = new_order_line.id
         

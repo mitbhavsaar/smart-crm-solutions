@@ -39,11 +39,29 @@
                         <field name="discount" string="Disc.%" groups="crm_customisation.group_crm_discount" optional="show"/>
                         <field name="tax_id" widget="many2many_tags" options="{'no_create': True}" optional="show"/>
                         <field name="price_subtotal" widget="monetary" options="{'currency_field': 'currency_id'}" string="Subtotal" optional="show"/>
-                        <field name="total_price" widget="monetary"  options="{'currency_field': 'currency_id'}" decoration-bf="1" sum="total_price"/>
+                        <field name="total_price" widget="monetary"  options="{'currency_field': 'currency_id'}" decoration-bf="1" />
                         <field name="currency_id" column_invisible="1"/>
                         
                     </list>
                 </field>
+                <div class="oe_clear"/>
+                <div class="row">
+                    <div class="col-6 offset-6">
+                        <div class="float-end d-flex gap-1 mb-2">
+                            <button string="Discount"
+                                    name="action_open_discount_wizard"
+                                    type="object"
+                                    class="btn btn-secondary"
+                                    groups="crm_customisation.group_crm_discount"/>
+                        </div>
+                        <div class="clearfix"/>
+                        <group class="oe_subtotal_footer oe_right" colspan="2" name="sale_total">
+                            <field name="amount_untaxed" widget="monetary" options="{'currency_field': 'currency_id'}"/>
+                            <field name="amount_total" class="oe_subtotal_footer_separator" widget="monetary" options="{'currency_field': 'currency_id'}"/>
+                            <field name="currency_id" invisible="1"/>
+                        </group>
+                    </div>
+                </div>
                 </page>
             </xpath>
             <xpath expr="//field[@name='name']" position="replace">

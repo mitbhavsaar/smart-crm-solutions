@@ -45,16 +45,7 @@ class CrmMaterialLine(models.Model):
         inverse='_inverse_price_custom',
         store=True
     )
-    discount = fields.Float(string='Discount (%)', digits='Discount', default=0.0)
-    tax_id = fields.Many2many('account.tax', string='Taxes', context={'active_test': False})
-    
-    price_subtotal = fields.Monetary(
-        string="Subtotal",
-        compute='compute_total_price',
-        store=True, 
-        currency_field='currency_id'
-    )
-    total_price = fields.Float(string ="Total Price" , readonly=True ,compute = "compute_total_price", store=True)
+    total_price = fields.Float(string ="Total Price" , readonly=True ,compute = "compute_total_price")
 
     product_template_id = fields.Many2one(
         'product.template',
@@ -78,8 +69,21 @@ class CrmMaterialLine(models.Model):
     quantity = fields.Float(string="Quantity")
     width = fields.Float(string="Width")
     thickness = fields.Float(string="Thickness")
+    raisin_type_id = fields.Many2one("raisin.type", string="Raisin Type")
     height = fields.Float(string="Height")
     length = fields.Float(string="Length")
+    discount = fields.Float(string='Discount (%)', digits='Discount', default=0.0)
+    tax_id = fields.Many2many(
+        'account.tax', 
+        string='Taxes',
+        domain=[('type_tax_use', '=', 'sale')],
+    )
+    price_subtotal = fields.Monetary(
+        string='Subtotal', 
+        compute='_compute_totals',
+        store=True,
+        currency_field='currency_id'
+    )
 
     # New: Attributes selected from configurator
     product_template_attribute_value_ids = fields.Many2many(
@@ -115,23 +119,32 @@ class CrmMaterialLine(models.Model):
     )
     
         
+    @api.depends('quantity', 'price')
     @api.depends('quantity', 'price', 'discount', 'tax_id')
-    def compute_total_price(self):
-        """Compute the amounts of the CRM line."""
+    def _compute_totals(self):
         for line in self:
-            price = line.price * (1 - (line.discount or 0.0) / 100.0)
+            price = line.price or 0.0
+            qty = line.quantity or 0.0
+            disc = line.discount or 0.0
+            
+            # Subtotal (Price * Qty * (1 - Discount))
+            subtotal = price * qty * (1 - (disc / 100.0))
+            line.price_subtotal = subtotal
+            
+            # Total Price (Subtotal + Taxes)
             taxes = line.tax_id.compute_all(
-                price, 
+                subtotal, 
                 line.currency_id, 
-                line.quantity, 
+                1.0, 
                 product=line.product_id, 
                 partner=line.lead_id.partner_id
             )
-            line.update({
-                'price_subtotal': taxes['total_excluded'],
-                'total_price': taxes['total_included'],
-            })
-    
+            line.total_price = taxes['total_included']
+
+    def compute_total_price(self):
+        # Compatibility/Legacy call
+        self._compute_totals()
+            
     @api.depends('price')
     def _compute_price_custom(self):
         """Compute price_custom from price field"""
@@ -156,61 +169,44 @@ class CrmMaterialLine(models.Model):
             attribute_lines = []
 
             # 1️⃣ Template Attribute Values
-            _logger.info(f"🔍 Processing {len(line.product_template_attribute_value_ids)} attribute values for description")
-            
-            # Sort PTAVs to ensure correct order for pairing logic
-            sorted_ptavs = line.product_template_attribute_value_ids.sorted(key=lambda p: p.attribute_line_id.sequence if p.attribute_line_id else 0)
-            
-            last_was_product_name = False
-            
-            for ptav in sorted_ptavs:
+            for ptav in line.product_template_attribute_value_ids:
                 attr = ptav.attribute_id
-                _logger.info(f"  🔹 Checking attribute: {attr.name}, is_custom: {ptav.is_custom}, display_type: {attr.display_type}")
-                
-                # Check Product Name
-                attr_name_lower = attr.name.lower() if attr.name else ""
-                is_product_name = "product name" in attr_name_lower
-                is_product_name = "product name" in attr_name_lower
-                
-                # Check pairing
-                is_paired = attr.pair_with_previous
-                
-                if is_paired and last_was_product_name:
-                     _logger.info(f"    ⏭️ Skipping paired attribute '{attr.name}' because previous was Product Name")
-                     last_was_product_name = False
-                     continue
-                
                 if ptav.is_custom:
-                    _logger.info(f"    ⏭️ Skipping {attr.name} (is_custom)")
-                    last_was_product_name = False
                     continue
 
                 display_type = attr.display_type
 
                 # 🔥 SKIP file_upload from description
                 if display_type == "file_upload":
-                    _logger.info(f"    ⏭️ Skipping {attr.name} (file_upload)")
-                    last_was_product_name = False
                     continue
-
-
 
                 # M2O attribute
                 if display_type == "m2o" and ptav.m2o_res_id:
-
                     model = attr.m2o_model_id.model
                     rec = self.env[model].sudo().browse(ptav.m2o_res_id)
                     attribute_lines.append(f"• {attr.name}: {rec.display_name}")
-                    _logger.info(f"    ✅ Added M2O: {attr.name}: {rec.display_name}")
-                    last_was_product_name = is_product_name
                     continue
 
                 # Normal attribute
                 attribute_lines.append(f"• {attr.name}: {ptav.name}")
-                _logger.info(f"    ✅ Added: {attr.name}: {ptav.name}")
-                last_was_product_name = is_product_name
 
-
+                # Auto-populate Raisin Type
+                # Check for "Raisin" or "Resin" in attribute name (case-insensitive)
+                attr_name_lower = attr.name.lower()
+                if "raisin" in attr_name_lower or "resin" in attr_name_lower:
+                    _logger.info(f"🔍 Found Raisin/Resin attribute: {attr.name}, Value: {ptav.name}")
+                    search_value = ptav.name.strip()
+                    # Try exact match first
+                    raisin_rec = self.env['raisin.type'].browse(ptav.m2o_res_id)
+                    if not raisin_rec:
+                         _logger.warning(f"⚠️ No 'raisin.type' found for value '{search_value}'. checking partial match...")
+                         # Optional: Try partial match if needed, or just log failure
+                    
+                    if raisin_rec:
+                        _logger.info(f"✅ Setting raisin_type_id to: {raisin_rec.name} (ID: {raisin_rec.id})")
+                        line.raisin_type_id = raisin_rec.id
+                    else:
+                        _logger.warning(f"❌ Failed to find raisin.type for value: {search_value}")
 
             # 2️⃣ Custom Attribute Values
             for custom in line.product_custom_attribute_value_ids:
@@ -234,14 +230,16 @@ class CrmMaterialLine(models.Model):
     
     @api.depends('product_template_attribute_value_ids')
     def _compute_attribute_summary(self):
-        """Attribute summary WITHOUT file upload and conditional Gel-coat"""
+        """Attribute summary WITHOUT file upload"""
         for line in self:
             summary = []
             for ptav in line.product_template_attribute_value_ids:
                 # 🔥 SKIP file_upload
                 if ptav.attribute_id.display_type == "file_upload":
                     continue
-
+                    
+                attr = ptav.attribute_id.name
+                
                 # M2O: show actual record name
                 if ptav.attribute_id.display_type == "m2o" and ptav.m2o_res_id:
                     model = ptav.attribute_id.m2o_model_id.model
@@ -250,8 +248,7 @@ class CrmMaterialLine(models.Model):
                 else:
                     val = ptav.name
                     
-                attr_name = ptav.attribute_id.name
-                summary.append(f"{attr_name}: {val}")
+                summary.append(f"{attr}: {val}")
             line.attribute_summary = ", ".join(summary)
             
     @api.depends('product_template_id')
@@ -271,6 +268,8 @@ class CrmMaterialLine(models.Model):
         for line in self:
             if not line.product_template_id:
                 line.product_id = False
+                line.price = 0.0
+                line.tax_id = False
                 continue
             product = line.product_template_id._get_variant_for_combination(
                 line.product_template_attribute_value_ids
@@ -282,10 +281,15 @@ class CrmMaterialLine(models.Model):
             line.product_id = product or False
             if product:
                 line.product_uom_id = product.uom_id
-                line.price = product.lst_price
+                # Auto-populate price from product's list price
+                line.price = product.list_price or 0.0
+                # Auto-populate taxes from product template
+                line.tax_id = product.product_tmpl_id.taxes_id
             else:
                 line.product_uom_id = False
-                line.price = 0.0
+                # Use template's list price if no variant found
+                line.price = line.product_template_id.list_price or 0.0
+                line.tax_id = line.product_template_id.taxes_id
     
 
     def unlink(self):
@@ -354,53 +358,29 @@ class CrmMaterialLine(models.Model):
         # Create records with processed values
         records = super().create(processed_vals_list)
         
-
-        
         # Trigger sync for related spreadsheets
         for record in records:
             if record.lead_id and record.lead_id.spreadsheet_ids:
                 for spreadsheet in record.lead_id.spreadsheet_ids:
-                    # 🔥 CRITICAL: Use savepoint to isolate spreadsheet sync from main transaction
-                    # If spreadsheet sync fails, we rollback only the savepoint, not the entire transaction
-                    savepoint_name = f"spreadsheet_sync_{record.id}_{spreadsheet.id}"
-                    
-                    # Create sheet for the new line with retry logic for concurrent updates
-                    max_retries = 3
-                    retry_delay = 0.1  # Start with 100ms delay
-                    
-                    for attempt in range(max_retries):
-                        try:
-                            # Create a savepoint before attempting spreadsheet sync
-                            self.env.cr.execute(f'SAVEPOINT "{savepoint_name}"')
-                            
-                            spreadsheet.with_context(material_line_id=record.id)._dispatch_insert_list_revision()
-                            
-                            # Release savepoint on success
-                            self.env.cr.execute(f'RELEASE SAVEPOINT "{savepoint_name}"')
-                            break  # Success, exit retry loop
-                            
-                        except Exception as e:
-                            # Rollback to savepoint to keep main transaction healthy
-                            try:
-                                self.env.cr.execute(f'ROLLBACK TO SAVEPOINT "{savepoint_name}"')
-                            except:
-                                pass  # Savepoint might not exist if error occurred before creation
-                            
-                            if "concurrent update" in str(e).lower() and attempt < max_retries - 1:
-                                _logger.warning(
-                                    f"⚠️ Concurrent update error on attempt {attempt + 1}/{max_retries}, "
-                                    f"retrying in {retry_delay}s..."
-                                )
-                                import time
-                                time.sleep(retry_delay)
-                                retry_delay *= 2  # Exponential backoff
-                            else:
-                                # Last attempt failed or different error - log but don't break creation
-                                _logger.error(
-                                    f"❌ Failed to dispatch spreadsheet revision after {attempt + 1} attempts: {e}"
-                                )
-                                # Don't raise - allow material line creation to succeed
-                                break
+                    # Create sheet for the new line
+                    spreadsheet.with_context(material_line_id=record.id)._dispatch_insert_list_revision()
+
+            # Auto-populate Raisin Type if missing
+            if not record.raisin_type_id and record.product_template_attribute_value_ids:
+                for ptav in record.product_template_attribute_value_ids:
+                    attr_name_lower = ptav.attribute_id.name.lower()
+                    if "raisin" in attr_name_lower or "resin" in attr_name_lower:
+                        _logger.info(f"🔍 [Create] Found Raisin/Resin attribute: {ptav.attribute_id.name}, Value: {ptav.name}")
+                        search_value = ptav.m2o_res_id
+                        print("search value -----------------",search_value)
+                        raisin_rec = self.env['raisin.type'].browse(ptav.m2o_res_id)
+                        print("resign rec ----------------------",raisin_rec)
+                        if raisin_rec:
+                            _logger.info(f"✅ [Create] Setting raisin_type_id to: {raisin_rec} (ID: {raisin_rec})")
+                            record.raisin_type_id = raisin_rec.id
+                            break
+                        else:
+                            _logger.warning(f"❌ [Create] Failed to find raisin.type for value: {search_value}")
         
         return records
 
@@ -453,18 +433,12 @@ class CrmMaterialLine(models.Model):
                 
                 _logger.info(f"✅ Updated attributes for record {record.id}: {current_map}")
         
-        # Trigger spreadsheet sync with error handling
+        # Trigger spreadsheet sync
         for record in self:
-            if record.lead_id and record.lead_id.spreadsheet_ids:
-                for spreadsheet in record.lead_id.spreadsheet_ids:
-                    try:
-                        spreadsheet._sync_sheets_with_material_lines()
-                    except Exception as e:
-                        # Log but don't fail the write operation
-                        _logger.warning(
-                            f"⚠️ Failed to sync spreadsheet {spreadsheet.id} during write: {e}. "
-                            "This is non-critical and will be retried on next update."
-                        )
+            spreadsheet_ids = getattr(record.lead_id, 'spreadsheet_ids', False)
+            if record.lead_id and spreadsheet_ids:
+                for spreadsheet in spreadsheet_ids:
+                    spreadsheet._sync_sheets_with_material_lines()
         
         return res
     

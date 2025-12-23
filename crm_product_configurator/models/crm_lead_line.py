@@ -1,6 +1,5 @@
 # -*- coding: utf-8 -*-
 from odoo import api, fields, models
-from odoo.exceptions import ValidationError
 import logging
 
 _logger = logging.getLogger(__name__)
@@ -39,52 +38,6 @@ class CrmMaterialLine(models.Model):
         store=True
     )
     
-    # NEW: BOQ Attachment fields (was conditional file)
-    boq_attachment_id = fields.Binary(
-        string="BOQ Attachment",
-        attachment=True,
-        help="File uploaded based on attribute value selection"
-    )
-    boq_attachment_name = fields.Char(
-        string="BOQ Attachment Name"
-    )
-    requires_conditional_file = fields.Boolean(
-        string="Requires File Upload",
-        compute="_compute_requires_conditional_file",
-        store=True,
-        help="True if any selected attribute value has 'Required File?' enabled"
-    )
-    
-    @api.depends('product_template_attribute_value_ids')
-    def _compute_requires_conditional_file(self):
-        """Check if any selected attribute value requires a file upload"""
-        for record in self:
-            requires_file = False
-            for ptav in record.product_template_attribute_value_ids:
-                # Only check for radio/select display types
-                if ptav.attribute_id.display_type in ['radio', 'select'] and ptav.required_file:
-                    requires_file = True
-                    break
-            record.requires_conditional_file = requires_file
-    
-    @api.constrains('product_template_attribute_value_ids', 'boq_attachment_id')
-    def _check_conditional_file_required(self):
-        """Validate that file is attached when required"""
-        for record in self:
-            if record.requires_conditional_file and not record.boq_attachment_id:
-                # Find which attribute requires the file
-                required_attrs = []
-                for ptav in record.product_template_attribute_value_ids:
-                    if ptav.attribute_id.display_type in ['radio', 'select'] and ptav.required_file:
-                        required_attrs.append(f"{ptav.attribute_id.name}: {ptav.name}")
-                
-                if required_attrs:
-                    raise ValidationError(
-                        f"File upload is required for the following selection(s):\n" +
-                        "\n".join(f"• {attr}" for attr in required_attrs)
-                    )
-
-    
     
     @api.depends(
         'product_template_attribute_value_ids',
@@ -102,14 +55,10 @@ class CrmMaterialLine(models.Model):
                 if ptav.attribute_id:
                     selected_attributes[ptav.attribute_id.name] = ptav.name
 
-            # Dependency: Gel Coat REQ/Required == yes → then show Gel-coat
-            # Check both "Gel Coat REQ" and "Gel Coat Required" for compatibility
-            gel_coat_req_value = (
-                selected_attributes.get("Gel Coat REQ", "") or 
-                selected_attributes.get("Gel Coat Required", "")
-            ).lower()
-            # Skip Gel-coat if value is "no" or empty
-            skip_gel_coat = gel_coat_req_value not in ["yes", "true", "1", "required"]
+            # Dependency: Gel Coat Required == true/yes → then show Gel-coat
+            gel_coat_required = selected_attributes.get("Gel Coat Required", "").lower()
+            # Check for "true", "yes", "1" etc.
+            skip_gel_coat = gel_coat_required not in ["true", "yes", "1", "required"]
 
             for ptav in record.product_template_attribute_value_ids:
                 attr = ptav.attribute_id
@@ -158,65 +107,119 @@ class CrmMaterialLine(models.Model):
             # Final description
             record.attributes_description = ", ".join(template_attrs + custom_attrs) if (template_attrs or custom_attrs) else ""
 
+
             
     @api.depends(
         'attached_file_id',
         'attached_file_name',
         'product_template_attribute_value_ids',
         'product_custom_attribute_value_ids',
+        'product_template_id'
     )
     def _compute_attributes_json(self):
-        """Attributes JSON WITHOUT file upload and conditional Gel-coat"""
+        """Attributes JSON WITHOUT file upload"""
         for record in self:
             data = {}
             
             try:
-                # Collect selected attributes for dependency checks
-                selected_attributes = {}
-                for ptav in record.product_template_attribute_value_ids:
-                    if ptav.attribute_id:
-                        selected_attributes[ptav.attribute_id.name] = ptav.name
+                # 1. Get all selected PTAVs for this record
+                selected_ptavs = record.product_template_attribute_value_ids
+                
+                # 2. Iterate through TEMPLATE lines to ensure correct order
+                if record.product_template_id:
+                    # Track usage of attribute names to handle duplicates (e.g. multiple UOMs)
+                    attr_name_counts = {}
 
-                # Dependency: Gel Coat REQ/Required == yes → then show Gel-coat
-                # Check both "Gel Coat REQ" and "Gel Coat Required" for compatibility
-                gel_coat_req_value = (
-                    selected_attributes.get("Gel Coat REQ", "") or 
-                    selected_attributes.get("Gel Coat Required", "")
-                ).lower()
-                # Skip Gel-coat if value is "no" or empty
-                skip_gel_coat = gel_coat_req_value not in ["yes", "true", "1", "required"]
+                    for ptal in record.product_template_id.attribute_line_ids:
+                        attr = ptal.attribute_id
+                        
+                        # Find selected value for this line
+                        # We filter selected_ptavs to find the one belonging to this line
+                        ptav = selected_ptavs.filtered(lambda v: v.attribute_line_id == ptal)
+                        
+                        if not ptav:
+                            continue
+                        
+                        # Handle multi-select (though usually 1 per line for these types)
+                        # For JSON map, we'll take the first one or join them? 
+                        # Configurator usually enforces single select for these types.
+                        ptav = ptav[0]
 
-                # Template attributes (SKIP file_upload)
-                for ptav in record.product_template_attribute_value_ids:
-                    attr = ptav.attribute_id
-                    if not attr or getattr(ptav, 'is_custom', False):
+                        if getattr(ptav, 'is_custom', False):
+                            # Custom values handled separately or here?
+                            # Original code skipped is_custom here and handled it in loop below.
+                            # But we want to maintain ORDER.
+                            # Let's check if we can get the custom value here.
+                            pass
+
+                        display_type = attr.display_type
+                        
+                        # 🔥 SKIP file_upload from JSON
+                        if display_type == "file_upload":
+                            continue
+
+                        # 🔥 SKIP is_quantity attributes
+                        if attr.is_quantity:
+                            continue
+
+                        # Generate Unique Key
+                        base_key = attr.name
+                        count = attr_name_counts.get(base_key, 0)
+                        if count == 0:
+                            key = base_key
+                        else:
+                            key = f"{base_key}__{count}"
+                        attr_name_counts[base_key] = count + 1
+
+                        # Get Value
+                        value = ""
+                        if ptav.is_custom:
+                            # Find custom value
+                            custom_val = record.product_custom_attribute_value_ids.filtered(
+                                lambda c: c.custom_product_template_attribute_value_id == ptav
+                            )
+                            if custom_val:
+                                value = custom_val[0].custom_value
+                        elif display_type == "m2o" and ptav.m2o_res_id:
+                            rec_m2o = self.env[attr.m2o_model_id.model].sudo().browse(ptav.m2o_res_id)
+                            value = rec_m2o.display_name
+                        else:
+                            value = ptav.name
+
+                        if value:
+                            data[key] = value
+
+                # 3. Smart Sort: Move "Name UOM" next to "Name"
+                # Convert to list of items to manipulate order
+                items = list(data.items())
+                final_items = []
+                processed_keys = set()
+                
+                # Helper to find UOM item for a given base key
+                def get_uom_item(base_key):
+                    # Check for "BaseKey UOM" or "BaseKey Uom"
+                    for k, v in items:
+                        if k in processed_keys:
+                            continue
+                        if k.lower() == f"{base_key} uom".lower():
+                            return (k, v)
+                    return None
+
+                for key, value in items:
+                    if key in processed_keys:
                         continue
-
-                    key = attr.name
-                    display_type = attr.display_type
-
-                    # 🔥 SKIP file_upload from JSON
-                    if display_type == "file_upload":
-                        continue
-
-                    # 🚫 SKIP Gel-coat only when Gel Coat Required != true/yes/1
-                    if skip_gel_coat and key.lower() in ["gel-coat", "gel coat"]:
-                        continue
-
-                    # M2O
-                    if display_type == "m2o" and ptav.m2o_res_id:
-                        rec = self.env[attr.m2o_model_id.model].sudo().browse(ptav.m2o_res_id)
-                        data[key] = rec.display_name
-                        continue
-
-                    # Normal
-                    data[key] = ptav.name
-
-                # Custom Attributes
-                for custom in record.product_custom_attribute_value_ids:
-                    ptav = custom.custom_product_template_attribute_value_id
-                    if ptav and ptav.attribute_id:
-                        data[ptav.attribute_id.name] = custom.custom_value
+                    
+                    final_items.append((key, value))
+                    processed_keys.add(key)
+                    
+                    # Check if this key has a corresponding UOM
+                    uom_item = get_uom_item(key)
+                    if uom_item:
+                        final_items.append(uom_item)
+                        processed_keys.add(uom_item[0])
+                
+                # Reconstruct dict with new order
+                data = dict(final_items)
 
             except Exception as e:
                 _logger.exception(f"❌ Error computing attributes_json: {e}")

@@ -10,10 +10,27 @@ _logger = logging.getLogger(__name__)
 class MrpProduction(models.Model):
     _inherit = "mrp.production"
 
+    raisin_type_id = fields.Many2one(
+        'raisin.type',
+        string="Raisin Type",
+        readonly=True,
+    )
 
+    raisin_product_id = fields.Many2one(
+        'product.product',
+        string="Raisin Product",
+        domain="[('categ_id.is_raisin', '=', True)]",
+    )
     sale_order_id = fields.Many2one('sale.order', compute="_compute_sale_order", store=False)
     ask_for_delivery_date = fields.Boolean(string="Ask for Delivery Date",readonly=True)
     delivery_date = fields.Date(string="Expected Delivery Date", readonly=True)
+    attached_file_id = fields.Binary(
+        string="Attached File",
+        attachment=True,
+    )
+    attached_file_name = fields.Char(
+        string="Attached File Name",
+    )
     email_reminder_sent = fields.Boolean(string="Email Reminder Sent", default=False)
     
     def _compute_sale_order(self):
@@ -21,14 +38,24 @@ class MrpProduction(models.Model):
             mo.sale_order_id = self.env['sale.order'].search([('name', '=', mo.origin)], limit=1)
 
 
-
+    @api.onchange('raisin_product_id')
+    def _onchange_raisin_product_id(self):
+        """Auto fetch Raisin Type when Raisin Product is selected."""
+        if self.raisin_product_id:
+            self.raisin_type_id = self.raisin_product_id.raisin_type_id.id
+        else:
+            self.raisin_type_id = False
 
     @api.model_create_multi
     def create(self, vals_list):
         for vals in vals_list:
             product_id = vals.get("product_id")
 
-
+            if product_id:
+                product = self.env['product.product'].browse(product_id)
+                # safe check: categ_id exists and has flag
+                if product and product.categ_id and product.categ_id.is_raisin:
+                    vals["raisin_product_id"] = product.id
 
         return super().create(vals_list)
 

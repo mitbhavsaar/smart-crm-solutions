@@ -292,7 +292,7 @@
             <div class="d-flex flex-column w-75">
                 <input class="o_input mb-1"
                     type="text"
-                    placeholder="Enter numeric values"
+                    placeholder="Enter numeric or decimal values"
                     t-att-value="this.props.customValue || ''"
                     t-on-input="validateNumeric"/>
 

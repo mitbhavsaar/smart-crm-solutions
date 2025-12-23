@@ -11,7 +11,7 @@
         'crm_customisation',
         'spreadsheet',
         'spreadsheet_edition',
-        'documents_spreadsheet',
+
     ],
     'data': [
         'security/ir.model.access.csv',
